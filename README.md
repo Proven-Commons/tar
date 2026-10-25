@@ -2,7 +2,7 @@
 
 This repo reads a tar archive (ustar format) and extracts regular files into an in-memory list of paths and file contents. Every path it emits is built by joining the destination with a cleaned relative path. A machine-checked proof shows the cleaned path can never climb out of the destination.
 
-It is the first Proven Commons project, built to the verified bar published in the org's home repo, [proven-commons](https://github.com/Proven-Commons/proven-commons). Status: pilot complete, October 2026.
+It is the first Proven Commons project. The org's home repo, [mission](https://github.com/Proven-Commons/mission), publishes the verified bar it is measured against. Status: built, not yet verified. The [bar audit of 2026-10-24](https://github.com/Proven-Commons/mission/blob/main/reviews/tar/2026-10-24-bar-audit.md) found that the bar is not yet met, and lists the fixes.
 
 ## Run it
 
