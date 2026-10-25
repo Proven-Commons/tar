@@ -31,11 +31,21 @@ def byteAt (b : ByteArray) (i : Nat) : UInt8 :=
 def sliceList (b : ByteArray) (off len : Nat) : List UInt8 :=
   (b.extract off (off + len)).toList
 
-/-- A name field: bytes up to the first NUL, read as UTF-8.
-    Invalid UTF-8 reads as the empty string. -/
-def bytesToName (bs : List UInt8) : String :=
+/-- A name field: bytes up to the first NUL, decoded without replacement.
+    Invalid UTF-8 rejects the header instead of losing half a split name. -/
+def bytesToName (bs : List UInt8) : Option String :=
   let raw := bs.takeWhile (fun b => b ≠ 0)
-  (String.fromUTF8? (ByteArray.mk raw.toArray)).getD ""
+  String.fromUTF8? (ByteArray.mk raw.toArray)
+
+/-- Ustar data files, including the POSIX contiguous-file type. -/
+def isRegularType (typeflag : Char) : Bool :=
+  typeflag == '0' || typeflag == Char.ofNat 0 || typeflag == '7'
+
+/-- Types this reader understands. Extension metadata must reject the
+    archive: skipping it could silently substitute a different pathname. -/
+def isSupportedType (typeflag : Char) : Bool :=
+  isRegularType typeflag || typeflag == '1' || typeflag == '2' ||
+    typeflag == '3' || typeflag == '4' || typeflag == '5' || typeflag == '6'
 
 /-- The header checksum: sum of all 512 bytes, with the checksum field
     itself (bytes 148 to 155) counted as spaces. -/
@@ -43,20 +53,27 @@ def blockChecksum (bs : List UInt8) : Nat :=
   (bs.zipIdx).foldl
     (fun acc p => acc + (if 148 ≤ p.2 ∧ p.2 < 156 then 32 else p.1.toNat)) 0
 
-/-- Parse one 512-byte header block. Fails on a short block, a bad
-    magic, a checksum mismatch, or a bad size field. -/
+/-- Parse the supported POSIX ustar subset: exact magic and version,
+    supported types, octal size and checksum, and UTF-8 pathname fields.
+    Non-data entries must have zero size. -/
 def parseBlock (block : ByteArray) : Option Header :=
   if block.size < 512 then none
   else do
-    if sliceList block 257 5 ≠ [117, 115, 116, 97, 114] then none else
+    if sliceList block 257 6 ≠ [117, 115, 116, 97, 114, 0] then none else
+    if sliceList block 263 2 ≠ [48, 48] then none else
     let stored ← parseOctal (sliceList block 148 8)
     if stored ≠ blockChecksum (sliceList block 0 512) then none else
+    let typeflag := Char.ofNat (byteAt block 156).toNat
+    if !isSupportedType typeflag then none else
     let size ← parseOctal (sliceList block 124 12)
-    let name := bytesToName (sliceList block 0 100)
-    let pfx := bytesToName (sliceList block 345 155)
+    if !isRegularType typeflag && size != 0 then none else
+    let name ← bytesToName (sliceList block 0 100)
+    let pfx ← bytesToName (sliceList block 345 155)
     let fullName := if pfx = "" then name else pfx ++ "/" ++ name
-    some { name := fullName, size := size,
-           typeflag := Char.ofNat (byteAt block 156).toNat }
+    -- Old tar readers interpret a NUL-type trailing slash as a directory.
+    -- Reject that ambiguous form rather than disagree about its payload.
+    if typeflag == Char.ofNat 0 && fullName.endsWith "/" then none else
+    some { name := fullName, size := size, typeflag := typeflag }
 
 /-- Content padded on the right with NUL bytes to width `w`,
     or cut to `w` when longer. -/
@@ -79,6 +96,10 @@ def splitUstarName (name : String) : Option (String × String) :=
     Mode is fixed at 0644, uid, gid, and mtime at 0.
     Fails when the size or the name does not fit. -/
 def buildBlock (name : String) (size : Nat) (typeflag : Char) : Option ByteArray := do
+  if Char.ofNat 0 ∈ name.toList then none else
+  if !isSupportedType typeflag then none else
+  if !isRegularType typeflag && size != 0 then none else
+  if typeflag == Char.ofNat 0 && name.endsWith "/" then none else
   let (pfx, short) ← splitUstarName name
   let sizeF ← formatOctal size 12
   let modeF ← formatOctal 0o644 8

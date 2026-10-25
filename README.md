@@ -4,6 +4,8 @@ This repo reads a tar archive (ustar format) and extracts regular files into an 
 
 It is the first Proven Commons project. The org's home repo, [mission](https://github.com/Proven-Commons/mission), publishes the verified bar it is measured against. Status: built, not yet verified. The [bar audit of 2026-10-24](https://github.com/Proven-Commons/mission/blob/main/reviews/tar/2026-10-24-bar-audit.md) found that the bar is not yet met, and lists the fixes.
 
+The [draft specification](SPEC.md) defines the supported ustar subset and extraction contract. It awaits independent review. GNU magic, extension metadata, invalid UTF-8 path fields, incomplete end blocks, and nonzero trailing data reject the whole archive before `list` or `manifest` prints entries.
+
 ## Run it
 
 Needs Lean 4.35.0 (install with elan, toolchain pinned in `lean-toolchain`).
@@ -29,7 +31,7 @@ The path gate and the extraction rule, in `TarPilot/Path.lean` and `TarPilot/Arc
 
 The CLI's `OK` lines call `extractEntry` and `joinPath`, the same functions used by these statements. `extractAll` filters the results of `extractEntry`. The CLI adds only `REJECT` and `SKIP` diagnostics for entries with no extracted result, preserving archive order. Parsing, diagnostics, and formatting sizes and byte sums remain outside the proof.
 
-The gate rules: absolute names are rejected. Any `..` component is rejected, as is a component containing `/` or NUL. Empty and `.` components are dropped. A name with nothing left is rejected. Only regular files (typeflag `0` or NUL) are extracted. Directory, link, and other entries are skipped, so a link entry cannot place a later entry outside the destination.
+The gate rules: absolute names are rejected. Any `..` component is rejected, as is a component containing `/` or NUL. Empty and `.` components are dropped. A name with nothing left is rejected. Data files (typeflag `0`, NUL, or `7`) are extracted. Directory, link, and other supported non-data entries are skipped, so a link entry cannot place a later entry outside the destination.
 
 Axiom check: each proof depends only on the standard Lean axioms (`propext`, `Classical.choice`, `Quot.sound`, or a subset). Full output is recorded in `tests/TEST-RESULTS.md`.
 
@@ -37,9 +39,9 @@ Axiom check: each proof depends only on the standard Lean axioms (`propext`, `Cl
 
 Read this before trusting the pilot with real archives:
 
-- Header parsing, octal fields, checksums, and archive writing are tested, not proved. The tests compare the Lean code against Python's `tarfile` module and against an independent copy of the extraction spec. Results are in `tests/TEST-RESULTS.md`: the original 14 archive entries and create/readback checks, plus 524 path cases (512 random, seed `20261024`) under eight destinations. Manifest comparisons preserve duplicate names and entry order; `posixpath` independently checks containment of emitted paths. Lean regressions cover embedded separators, NUL, the old theorem's traversal counterexample, and lexical resolution. Broken inputs cover truncated archives, garbage, and bad checksums.
+- Header parsing, octal fields, checksums, and archive writing are tested, not proved. The tests compare the Lean code against Python's `tarfile` module and against an independent copy of the extraction spec. The [test report](tests/TEST-RESULTS.md) records the original archive and create/readback checks, 524 path cases across eight destinations, and the parser campaign (seed `20261025`: 512 random valid archives and 512 mutated invalid archives, plus fixed regressions). Every parser case checks both `list` and `manifest`; rejected cases must print no stdout. All 256 typeflag bytes are covered. `posixpath` independently checks emitted paths. Lean regressions cover separators, NUL, UTF-8 decoding, header writing, and the old theorem's traversal counterexample.
 - Extraction works on an in-memory model. Nothing here writes files to disk, so the step from a proved in-memory path to a safe write on a real filesystem (races, symlinked destination folders) is outside this project for now.
-- Invalid UTF-8 becomes an empty header field. With a split ustar name, a valid prefix or name can survive while the invalid field is lost. GNU longname and pax path overrides are ignored rather than reliably rejected, so extension-bearing archives can produce incorrect names. Base-256 sizes and sparse files are not supported. Typeflag `7` (contiguous file) is skipped even though Python treats it as regular. These parser and compatibility findings from the audit remain open; use the pilot only for its supported ustar subset.
+- The reader intentionally rejects formats outside its [supported subset](SPEC.md): GNU magic, pax/GNU extension headers, sparse extension types, base-256 sizes, non-data entries with payloads, and ambiguous NUL-type directory names. It requires block alignment, two zero end blocks, and only zero record padding after them. Some other tar readers accept inputs this pilot rejects. UTF-8 is required for both path fields; other encodings are not converted. The CLI prints tabs and line breaks in names literally; its text output is not an escaped wire format.
 - The Lean compiler, runtime, kernel, and hardware are trusted. The tests also rely on Python's `tarfile` and `posixpath` as oracles. Bugs in these are outside the proof.
 
 ## Re-check it
@@ -48,9 +50,12 @@ Read this before trusting the pilot with real archives:
 lake build
 lake env lean TarPilot/Verify.lean
 python3 tests/run_tests.py
+lake check --paranoid
 ```
 
 The build checks the proofs, but accepts `sorry` with a warning. The second command prints the axiom list. The test script always rebuilds, runs the Lean regressions and every comparison, and rewrites `tests/TEST-RESULTS.md`. It requires each named theorem's axiom list to contain only `propext`, `Classical.choice`, and `Quot.sound`, so `sorryAx` and custom axioms fail the tests.
+
+`lake check --paranoid` needs a working `bubblewrap` sandbox on Linux. It replays proofs through all six bundled kernels and rejects nonstandard axioms. The `Proofs and differential tests` workflow runs the test script and the sandboxed proof check on pull requests and pushes to `main`, and saves the test report as an artifact. Branch protection must separately require this workflow; independent specification approval is still outstanding.
 
 ## Layout
 
@@ -62,3 +67,6 @@ The build checks the proofs, but accepts `sorry` with a warning. The second comm
 - `Main.lean`: the command line front end.
 - `tests/run_tests.py`: differential tests against Python's `tarfile`.
 - `tests/PathSafety.lean`: path safety regressions, including the old statement's counterexample.
+- `tests/HeaderSafety.lean`: UTF-8 decoding and header-builder regressions.
+- `tests/parser_cases.py`: format regressions and seeded parser comparisons.
+- `SPEC.md`: the draft contract for review.

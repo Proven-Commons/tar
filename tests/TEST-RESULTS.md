@@ -3,13 +3,15 @@
 Run by `tests/run_tests.py` against Python's `tarfile` module.
 Lean: Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release). Python: 3.12.14.
 
-- Checks run: 40
+- Checks run: 2641
 - Failures: 0
 - Archive A entries compared (list and manifest): 14
 - Manifest outcome on archive A: 9 extracted, 3 rejected by the path gate, 2 skipped as non-regular
 - Files written by the Lean `create` command and read back by Python: 3
 - Path regression entries: 524 (512 random, seed 20261024), compared with the spec under 8 destinations and checked with `posixpath`
-- `tests/PathSafety.lean`: cleaner, gate, joined-path and relative-resolution regressions
+- Lean regressions: `tests/PathSafety.lean` (paths and resolution) and `tests/HeaderSafety.lean` (UTF-8 decoding and header writing)
+- Parser archives: 517 compared with Python tarfile (1887 entries), 783 rejected with no output
+- Parser seed: 20261025; 512 random valid archives and 512 mutated archives; every case checks list and manifest
 - Broken inputs rejected with exit code 1: truncated archive, random garbage, corrupted checksum
 
 Axiom check (`TarPilot/Verify.lean`):
