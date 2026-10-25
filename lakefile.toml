@@ -7,7 +7,6 @@ name = "TarPilot"
 
 [[lean_lib]]
 name = "Spec"
-roots = ["Spec.Defs"]
 
 [[lean_lib]]
 name = "Proofs"

@@ -1,19 +1,37 @@
 #!/usr/bin/env python3
 """Differential tests for the Proven Commons tar pilot.
 
-Compares the Lean implementation against Python's `tarfile` module and
-against an independent implementation of the extraction spec written
-below. Run from anywhere:
+Compares the tool's `list` and `manifest` commands against Python's
+`tarfile` module and against a model of the format the pilot reads,
+written below from SPEC.md, independently of the Lean code. Run from
+anywhere:
 
-    python3 tests/run_tests.py
+    python3 tests/run_tests.py [--seed N] [--count N]
 
-It builds the Lean project first, so it never checks stale code, runs
-all cases in a temporary directory, writes `tests/TEST-RESULTS.md`, and
-exits non-zero if any case fails.
+It has two parts:
+
+- Fixed cases: an archive of normal, hostile and edge-case entries
+  written with tarfile, eleven destinations, archives written by the
+  tool and read back by tarfile, broken archives, and the formats the
+  pilot does not read (the probes of the 2026-10-24 bar audit).
+- Random cases, from a recorded seed: archives written by tarfile in
+  ustar, GNU and pax formats, with hostile names, every POSIX entry
+  type, and random data, and the same kind of archives mutated (bytes
+  flipped, header fields overwritten with or without a fixed checksum,
+  cut, or extended). For each, the tool's output must equal the
+  model's. Where the model and tarfile both read an unmutated archive,
+  they must also agree on every entry, which checks the model against
+  an independent reader.
+
+It builds the Lean project first, so it never checks stale code, writes
+`tests/TEST-RESULTS.md`, and exits non-zero if any case fails. The
+proofs are checked by `lake comparator --paranoid`, not here.
 """
 
+import argparse
 import io
 import os
+import platform
 import random
 import re
 import shutil
@@ -26,12 +44,6 @@ from pathlib import Path
 PILOT_DIR = Path(__file__).resolve().parent.parent
 EXE = PILOT_DIR / ".lake" / "build" / "bin" / "tar-pilot"
 RESULTS = PILOT_DIR / "tests" / "TEST-RESULTS.md"
-# The theorems `TarPilot/Verify.lean` prints the axioms of.
-THEOREMS = ["gate_eq", "gate_plain", "manifest_eq", "manifest_extracted", "manifest_lines",
-            "manifest_lines_eq", "extractAll_contained",
-            "extractAll_joined", "extractAll_resolves_inside", "extractArchive_eq",
-            "extractArchive_resolves_inside"]
-
 checks = 0
 failures = []
 
@@ -180,6 +192,21 @@ def unsupported_archives(work):
             tarfile.USTAR_FORMAT, name, data=b"x", typ=typ)
     yield "size field of spaces", patch_header(
         one_file(tarfile.USTAR_FORMAT, "f", data=b""), 124, b" " * 12)
+    yield "digit 8 in the size field", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "a.txt", data=b"x" * 8), 124, b"00000000008\0")
+    yield "NUL before the digits of the size field", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "a.txt"), 124, b"\x000000000001\0")
+    yield "GNU magic with version 00", patch_header(
+        one_file(tarfile.GNU_FORMAT, "a.txt"), 263, b"00")
+    yield "GNU header with the last byte of the prefix area set", patch_header(
+        one_file(tarfile.GNU_FORMAT, "a.txt"), 499, b"\x01")
+    signed = bytearray(one_file(tarfile.USTAR_FORMAT, "\u00e9.txt", data=b"hi\n"))
+    signed[148:156] = b" " * 8
+    signed[148:156] = b"%06o\0 " % sum(b - 256 if b > 127 else b for b in signed[:512])
+    yield "checksum over signed bytes", bytes(signed)
+    end = bytearray(one_file(tarfile.USTAR_FORMAT, "a.txt"))
+    end[1024 + 511] = 1
+    yield "a block of zeros but its last byte where the end should be", bytes(end)
     gnu_tar = shutil.which("tar")
     if gnu_tar:
         src = work / "systar-long" / "d"
@@ -219,6 +246,18 @@ def readable_archives(work):
     for typ in [tarfile.LNKTYPE, tarfile.SYMTYPE, tarfile.CHRTYPE, tarfile.BLKTYPE,
                 tarfile.DIRTYPE, tarfile.FIFOTYPE]:
         yield f"typeflag {typ.decode()} with a size field, then two files", hidden_after(typ)
+    yield "a 100-byte name", one_file(tarfile.USTAR_FORMAT, "f" * 96 + ".txt", data=b"full")
+    yield "a 155-byte prefix", one_file(tarfile.USTAR_FORMAT, "d" * 155 + "/f.txt", data=b"deep")
+    yield "a size field of 12 digits and no terminator", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "a.txt", data=b"x" * 15), 124, b"000000000017")
+    yield "a size field ending in a space and a NUL", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "a.txt", data=b"y"), 124, b"0000000001 \0")
+    seven = bytearray(one_file(tarfile.USTAR_FORMAT, "a.txt", data=b"z"))
+    seven[148:156] = b" " * 8
+    seven[148:156] = b"%07o\0" % sum(seven[:512])
+    yield "a checksum of seven digits", bytes(seven)
+    yield "a header with its last twelve bytes set", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "a.txt", data=b"pad"), 500, b"padding1234!")
     gnu_tar = shutil.which("tar")
     if gnu_tar:
         src = work / "systar-short"
@@ -350,7 +389,307 @@ def list_rows(stdout):
     return rows
 
 
+# ---- A model of the format, from SPEC.md --------------------------------
+
+USTAR_MAGIC = b"ustar\x0000"
+GNU_MAGIC = b"ustar  \x00"
+
+
+def model_octal(field):
+    """An octal field: leading spaces, then digits 0 to 7, then NULs or
+    spaces. A field with no digits reads as 0 when it is all NUL, and is
+    invalid (None) when it holds a space. Anything else is invalid."""
+    field = bytes(field)
+    digits = field.lstrip(b" ").rstrip(b"\x00 ")
+    if any(c < 0x30 or c > 0x37 for c in digits):
+        return None
+    if not digits:
+        return None if b" " in field else 0
+    return int(digits, 8)
+
+
+def model_name(field):
+    """A name field: the bytes before the first NUL, as UTF-8, or None."""
+    try:
+        return bytes(field).split(b"\x00", 1)[0].decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def model_header(block):
+    """(name, size, typeflag) of a header block, or None if the pilot
+    must not read it."""
+    magic = block[257:265]
+    if not (magic == USTAR_MAGIC or (magic == GNU_MAGIC and block[345:500] == bytes(155))):
+        return None
+    stored = model_octal(block[148:156])
+    if stored is None or stored != sum(block[:148]) + 8 * 32 + sum(block[156:512]):
+        return None
+    size = model_octal(block[124:136])
+    typeflag = block[156]
+    if size is None or not (typeflag == 0 or 0x30 <= typeflag <= 0x37):
+        return None
+    name, prefix = model_name(block[0:100]), model_name(block[345:500])
+    if name is None or prefix is None:
+        return None
+    full = name if prefix == "" else prefix + "/" + name
+    # Only regular typeflags are followed by data. A regular typeflag with
+    # a name ending in `/` is a directory, and must say size 0.
+    regular = typeflag in REGULAR_CODES
+    if regular and full.endswith("/") and size != 0:
+        return None
+    return full, (size if regular else 0), typeflag
+
+
+def model_parse(data):
+    """The entries (name, data, typeflag) of an archive, or None when the
+    whole archive must fail to parse."""
+    off, entries = 0, []
+    while True:
+        if off + 512 > len(data):
+            return None
+        block = data[off:off + 512]
+        if block == bytes(512):
+            return entries
+        header = model_header(block)
+        if header is None:
+            return None
+        name, size, typeflag = header
+        start = off + 512
+        if start + size > len(data):
+            return None
+        entries.append((name, data[start:start + size], typeflag))
+        off = start + (size + 511) // 512 * 512
+
+
+def model_output(command, data, dest="out"):
+    """(exit code, stdout lines) the tool must give."""
+    entries = model_parse(data)
+    if entries is None:
+        return 1, []
+    if command == "list":
+        return 0, [f"{escape_name(n)}\t{len(d)}\t{t}" for n, d, t in entries]
+    return 0, expected_manifest(entries, dest)
+
+
+# ---- Random archives ----------------------------------------------------
+
+PARTS = ["a", "b", "x.txt", "..", ".", "", "é", "日本", "a b", "-", "\\", "..a", ":",
+         "\n", "\t", "\x7f", "\x85", " ", "n" * 60, "p" * 120]
+TYPES = [tarfile.REGTYPE, tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.CONTTYPE,
+         tarfile.DIRTYPE, tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.CHRTYPE,
+         tarfile.BLKTYPE, tarfile.FIFOTYPE]
+FORMATS = [tarfile.USTAR_FORMAT, tarfile.USTAR_FORMAT, tarfile.GNU_FORMAT, tarfile.PAX_FORMAT]
+DESTS = ["out", "out/", "/", "", "/srv/data", "a//b", "../up", "./o"]
+
+
+def random_name(rng):
+    if rng.random() < 0.15:
+        # Lengths at the edges of the name and prefix fields.
+        kind = rng.randrange(3)
+        if kind == 0:
+            return "f" * (rng.choice([99, 100, 101]) - 4) + ".txt"
+        if kind == 1:
+            return "d" * rng.choice([154, 155, 156]) + "/f.txt"
+        return "d" * 150 + "/" + "f" * rng.choice([99, 100, 101])
+    name = "/".join(rng.choice(PARTS) for _ in range(rng.randrange(1, 5)))
+    if rng.random() < 0.15:
+        name = "/" + name
+    if rng.random() < 0.1:
+        name += "/"
+    return name or "e"
+
+
+def random_archive(rng):
+    """An archive written by tarfile with random entries."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=rng.choice(FORMATS)) as tf:
+        for _ in range(rng.randrange(1, 6)):
+            ti = tarfile.TarInfo(random_name(rng))
+            ti.type = rng.choice(TYPES)
+            ti.mtime = 0
+            data = b""
+            if ti.type in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.CONTTYPE):
+                # A regular typeflag with a name ending in `/` is a directory
+                # that must say size 0; give it data only sometimes.
+                if not ti.name.endswith("/") or rng.random() < 0.3:
+                    data = rng.randbytes(rng.choice([0, 1, 511, 512, 513, rng.randrange(3000)]))
+                ti.size = len(data)
+            else:
+                if ti.type in (tarfile.SYMTYPE, tarfile.LNKTYPE):
+                    ti.linkname = random_name(rng)
+                # tarfile writes the size field but no data for other types,
+                # which store none.
+                ti.size = rng.choice([0, 0, 0, 1, 512, 1024])
+            regular = ti.type in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.CONTTYPE)
+            try:
+                tf.addfile(ti, io.BytesIO(data) if regular else None)
+            except (ValueError, UnicodeError, tarfile.TarError):
+                pass
+    return buf.getvalue()
+
+
+def header_offsets(data):
+    """Where the header blocks of an archive are, found by following the
+    size fields as a reader would, whether or not the headers are valid."""
+    offs, off = [], 0
+    while off + 512 <= len(data) and len(offs) < 64:
+        block = data[off:off + 512]
+        if block == bytes(512):
+            break
+        offs.append(off)
+        size = model_octal(block[124:136]) or 0
+        off += 512 + ((size + 511) // 512 * 512 if block[156] in REGULAR_CODES else 0)
+    return offs
+
+
+def field_value(rng, field):
+    """A value for one header field, often at the edge of what is valid."""
+    n = rng.randrange(0, 1200)
+    if field == "size":
+        return rng.choice([b"%011o\0" % n, b"%012o" % n, b" %010o\0" % n, b"%010o \0" % n,
+                           b"%010o\0 " % n, b"\0%010o\0" % n, b"%010o8\0" % n, b"%010o9 " % n,
+                           b" " * 12, bytes(12), b"%011o " % n, b"\x80" + bytes(10) + b"\x01"])
+    if field == "magic":
+        return rng.choice([b"ustar\x0000", b"ustar  \x00", b"ustar\x00  ", b"ustar 00",
+                           b"ustar\x00\x00\x00", b"ustar  0", b"ustar\x0001", b"USTAR\x0000"])
+    if field == "typeflag":
+        return bytes([rng.choice(b"0123456789\x00LKxgSDAZ")])
+    if field == "name":
+        return rng.choice([b"f" * 96 + b".txt", b"g" * 100, b"a\xffb", b"a\x00b.txt",
+                           b"\xc3\xa9.txt", b"x/../y", b"/abs", b"dir/"]).ljust(100, b"\0")
+    if field == "prefix":
+        return rng.choice([b"d" * 155, b"d" * 154, bytes(154) + b"\x01", b"1" + bytes(154),
+                           b"p\xff", b"pre"]).ljust(155, b"\0")
+    return bytes(rng.randrange(256) for _ in range(8))
+
+
+FIELDS = {"name": (0, 100), "mode": (100, 8), "size": (124, 12), "typeflag": (156, 1),
+          "magic": (257, 8), "prefix": (345, 155), "pad": (500, 12)}
+
+
+def set_checksum(block, how):
+    """Write a checksum into a header block: the right one, the right one
+    in seven digits, the sum of signed bytes, or none (left stale)."""
+    if how == "stale":
+        return
+    block[148:156] = b" " * 8
+    if how == "signed":
+        total = sum(b - 256 if b > 127 else b for b in block)
+        block[148:156] = b"%06o\0 " % (total % 0o1000000)
+    elif how == "seven":
+        block[148:156] = b"%07o\0" % sum(block)
+    else:
+        block[148:156] = b"%06o\0 " % sum(block)
+
+
+def mutate(rng, data):
+    """One to three random changes to an archive, most of them to a field
+    of a header, with the checksum then made right, signed, seven digits,
+    or left stale."""
+    out = bytearray(data)
+    for _ in range(rng.randrange(1, 4)):
+        kind = rng.randrange(8)
+        offs = header_offsets(bytes(out))
+        if kind <= 3 and offs:
+            base = rng.choice(offs)
+            name = rng.choice(list(FIELDS))
+            off, width = FIELDS[name]
+            value = field_value(rng, name)[:width]
+            if rng.random() < 0.3:
+                # Only the tail of the field.
+                cut = rng.randrange(width)
+                value = value[cut:]
+                off += cut
+            out[base + off:base + off + len(value)] = value
+            block = out[base:base + 512]
+            set_checksum(block, rng.choice(["right", "right", "right", "signed", "seven", "stale"]))
+            out[base:base + 512] = block
+        elif kind == 4 and out:
+            out[rng.randrange(len(out))] ^= 1 << rng.randrange(8)
+        elif kind == 5 and out:
+            del out[rng.randrange(len(out)):]
+        elif kind == 6:
+            out += rng.choice([bytes(512), bytes(1024), rng.randbytes(rng.randrange(1, 600))])
+        else:
+            base = rng.randrange(max(1, len(out) // 512)) * 512
+            del out[base:base + 512]
+    return bytes(out)
+
+
+def tarfile_view_bytes(data):
+    """(name, data, typeflag) as tarfile reads each entry, or None."""
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+            return [(m.name, tf.extractfile(m).read() if m.isreg() else b"", m.type[0])
+                    for m in tf.getmembers()]
+    except (tarfile.TarError, UnicodeError, ValueError, OSError):
+        return None
+
+
+def tarfile_agrees(data, entries):
+    """Whether tarfile reads what the model reads. tarfile drops the
+    trailing `/` of a directory name and returns no data for an entry that
+    is not a regular file. It reads an entry with typeflag NUL and a name
+    field ending in `/` as a directory, but misses that rule when the name
+    is split so the name field is empty, and reads typeflag `0` or `7`
+    with a trailing `/` as a regular file. The model, like GNU tar, reads
+    any regular typeflag with a name ending in `/` as a directory, so
+    such entries are compared as directories on both sides."""
+    got = tarfile_view_bytes(data)
+    if got is None:
+        return False
+
+    def norm(entries):
+        out = []
+        for n, d, t in entries:
+            if t == 0x35 or (t in REGULAR_CODES and n.endswith("/")):
+                n, d, t = n.rstrip("/"), b"", 0x35
+            out.append((n, d if t in REGULAR_CODES else b"", t))
+        return out
+    return norm(got) == norm(entries)
+
+
+def random_cases(seed, count, work):
+    """Run `count` random archives, every second one mutated."""
+    rng = random.Random(seed)
+    stats = {"archives": 0, "mutated": 0, "read": 0, "tarfile": 0}
+    path = work / "random.tar"
+    for i in range(count):
+        data = random_archive(rng)
+        mutated = i % 2 == 1
+        if mutated:
+            data = mutate(rng, data)
+        path.write_bytes(data)
+        stats["archives"] += 1
+        stats["mutated"] += mutated
+        dest = rng.choice(DESTS)
+        for command in ("list", "manifest"):
+            args = [command, str(path)] + ([dest] if command == "manifest" else [])
+            r = run_lean(*args)
+            want_rc, want = model_output(command, data, dest)
+            got = output_lines(r.stdout) if r.stdout.endswith("\n") or not r.stdout else ["(no LF)"]
+            check(f"random {i} {command}", (r.returncode, got) == (want_rc, want),
+                  f"seed={seed} rc={r.returncode} want_rc={want_rc} got={got[:3]} want={want[:3]}")
+        entries = model_parse(data)
+        if entries is not None:
+            stats["read"] += 1
+            if not mutated:
+                agrees = tarfile_agrees(data, entries)
+                stats["tarfile"] += agrees
+                check(f"random {i} model agrees with tarfile", agrees,
+                      f"seed={seed} model={entries[:3]} tarfile={(tarfile_view_bytes(data) or [])[:3]}")
+    return stats
+
+
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--seed", type=int, default=20261025)
+    ap.add_argument("--count", type=int, default=10000,
+                    help="random archives, half of them mutated")
+    args = ap.parse_args()
+    if shutil.which("tar") is None:
+        sys.exit("needs GNU tar on PATH: some fixed cases are archives it writes")
     # A run that stops early must not leave an earlier passing record.
     RESULTS.unlink(missing_ok=True)
     build = subprocess.run(["lake", "build"], cwd=PILOT_DIR, capture_output=True, text=True)
@@ -466,6 +805,12 @@ def main():
         r = run_lean("list", str(badsum))
         check("bad-checksum-fails", r.returncode == 1, f"rc={r.returncode}")
 
+        # 5b. Usage errors exit with code 2.
+        for bad_use in [[], ["frob"], ["manifest", str(archive_a)], ["list"]]:
+            r = run_lean(*bad_use)
+            check(f"usage {bad_use[:1]}", r.returncode == 2 and r.stdout == "",
+                  f"rc={r.returncode}")
+
         # 6. Formats the pilot does not read fail to parse, with exit
         # code 1 and nothing on standard output, for both commands.
         unsupported = 0
@@ -497,37 +842,33 @@ def main():
             check(f"readable-manifest: {label}", r.returncode == 0 and got == want,
                   f"rc={r.returncode} lean={got} expected={want}")
 
-    # 8. Axiom check: Verify.lean prints the axioms of exactly the
-    # theorems in THEOREMS, and each depends on the three standard axioms
-    # at most. Any other axiom, `sorryAx` included, fails the check.
-    ax = subprocess.run(["lake", "env", "lean", "TarPilot/Verify.lean"],
-                        cwd=PILOT_DIR, capture_output=True, text=True)
-    ax_out = ax.stdout + ax.stderr
-    check("axioms-run", ax.returncode == 0, ax_out[:400])
-    allowed = {"propext", "Classical.choice", "Quot.sound"}
-    records = {}
-    for m in re.finditer(r"'([\w.]+)' depends on axioms: \[(.*?)\]", ax_out, re.DOTALL):
-        records[m.group(1)] = {a.strip() for a in m.group(2).split(",") if a.strip()}
-    for m in re.finditer(r"'([\w.]+)' does not depend on any axioms", ax_out):
-        records[m.group(1)] = set()
-    expected = {f"TarPilot.{t}" for t in THEOREMS}
-    check("axioms-names", set(records) == expected,
-          f"printed {sorted(records)}, expected {sorted(expected)}")
-    for name, used in sorted(records.items()):
-        check(f"axioms-{name}", used <= allowed, f"axioms: {sorted(used)}")
+        # Archive A, the tool's own archive, three broken ones, and the
+        # format probes.
+        fixed_archives = 1 + 1 + 3 + unsupported + readable
 
-    axiom_checks = len(records) + 2
-    lean_ver = subprocess.run(["lean", "--version"], capture_output=True,
-                              text=True).stdout.strip()
+        # 8. Random archives from the seed.
+        stats = random_cases(args.seed, args.count, td)
 
+    lean_ver = subprocess.run(["lake", "env", "lean", "--version"], cwd=PILOT_DIR,
+                              capture_output=True, text=True).stdout.strip()
+
+    inputs = fixed_archives + stats["archives"]
     lines = [
         "# Test results",
         "",
-        f"Run by `tests/run_tests.py` against Python's `tarfile` module.",
-        f"Lean: {lean_ver}. Python: {sys.version.split()[0]}.",
+        "Written by `tests/run_tests.py`. Rerun it to check these numbers.",
         "",
-        f"- Checks run: {checks} ({axiom_checks} of them on the axioms of the theorems)",
-        f"- Failures: {len(failures)}",
+        f"- Oracle: Python {platform.python_version()} `tarfile`, and the model of the "
+        f"format in `tests/run_tests.py`, which tarfile checks on every unmutated "
+        f"archive both read",
+        f"- Lean: {lean_ver}",
+        f"- Seed: {args.seed}",
+        f"- Inputs: {inputs}",
+        f"- Archives: {fixed_archives} fixed, {stats['archives']} random",
+        f"- Random archives: {stats['archives']}, {stats['mutated']} of them mutated; "
+        f"the model reads {stats['read']}, and tarfile agrees with it on all "
+        f"{stats['tarfile']} unmutated ones both read",
+        f"- Checks run: {checks}",
         f"- Archive A entries compared (list and manifest): {len(ref_entries)}",
         f"- Manifest outcome on archive A: {ok_count} extracted, "
         f"{rej_count} rejected by the path gate, {skip_count} skipped as non-regular",
@@ -537,12 +878,7 @@ def main():
         f"- Archives in formats the pilot does not read, rejected with exit code 1 "
         f"by `list` and `manifest`: {unsupported}",
         f"- Archives in other formats it reads, compared with tarfile: {readable}",
-        "",
-        "Axiom check (`TarPilot/Verify.lean`):",
-        "",
-        "```",
-        ax_out.strip(),
-        "```",
+        f"- Failures: {len(failures)}",
         "",
     ]
     if failures:
