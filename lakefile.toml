@@ -1,9 +1,16 @@
 name = "tar-pilot"
 version = "0.1.0"
-defaultTargets = ["TarPilot", "tar-pilot"]
+defaultTargets = ["TarPilot", "Spec", "Proofs", "tar-pilot"]
 
 [[lean_lib]]
 name = "TarPilot"
+
+[[lean_lib]]
+name = "Spec"
+roots = ["Spec.Defs"]
+
+[[lean_lib]]
+name = "Proofs"
 
 [[lean_exe]]
 name = "tar-pilot"

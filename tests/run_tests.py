@@ -7,14 +7,15 @@ below. Run from anywhere:
 
     python3 tests/run_tests.py
 
-It builds the Lean project if the executable is missing, runs all
-cases in a temporary directory, writes `tests/TEST-RESULTS.md`, and
+It builds the Lean project first, so it never checks stale code, runs
+all cases in a temporary directory, writes `tests/TEST-RESULTS.md`, and
 exits non-zero if any case fails.
 """
 
 import io
 import os
 import random
+import re
 import subprocess
 import sys
 import tarfile
@@ -24,6 +25,11 @@ from pathlib import Path
 PILOT_DIR = Path(__file__).resolve().parent.parent
 EXE = PILOT_DIR / ".lake" / "build" / "bin" / "tar-pilot"
 RESULTS = PILOT_DIR / "tests" / "TEST-RESULTS.md"
+# The theorems `TarPilot/Verify.lean` prints the axioms of.
+THEOREMS = ["gate_eq", "gate_plain", "manifest_eq", "manifest_extracted", "manifest_lines",
+            "manifest_lines_eq", "extractAll_contained",
+            "extractAll_joined", "extractAll_resolves_inside", "extractArchive_eq",
+            "extractArchive_resolves_inside"]
 
 checks = 0
 failures = []
@@ -38,17 +44,44 @@ def check(name, ok, detail=""):
 
 
 def run_lean(*args, cwd=None):
-    return subprocess.run([str(EXE), *args], capture_output=True, text=True, cwd=cwd)
+    """Run the tool. Its output is decoded without newline translation,
+    so a stray CR shows up as a mismatch."""
+    r = subprocess.run([str(EXE), *args], capture_output=True, cwd=cwd)
+    return subprocess.CompletedProcess(
+        r.args, r.returncode, r.stdout.decode("utf-8", "surrogateescape"),
+        r.stderr.decode("utf-8", "surrogateescape"))
+
+
+def is_special(c):
+    """A control character (C0 below space, DEL, or C1), or the line
+    separator U+2028 or the paragraph separator U+2029."""
+    return ord(c) < 0x20 or 0x7F <= ord(c) < 0xA0 or c in "\u2028\u2029"
+
+
+def escape_char(c):
+    if c == "\\":
+        return "\\\\"
+    if c in "\u2028\u2029":
+        return f"\\u{ord(c):04x}"
+    return f"\\x{ord(c):02x}" if is_special(c) else c
+
+
+def escape_name(name):
+    """A name as the tool prints it: a backslash as two, U+2028 and
+    U+2029 as `\\u2028` and `\\u2029`, any other special character as
+    `\\x` and two hex digits."""
+    return "".join(escape_char(c) for c in name)
 
 
 def spec_gate(name):
     """The extraction spec, implemented independently of the Lean code.
 
     Returns the cleaned relative components, or None to reject.
-    Absolute names are rejected. Any `..` is rejected. Empty and `.`
-    components are dropped. An empty result is rejected.
+    Absolute names are rejected. Any `..`, and any special character,
+    is rejected. Empty and `.` components are dropped. An empty result
+    is rejected.
     """
-    if name.startswith("/"):
+    if name.startswith("/") or any(is_special(c) for c in name):
         return None
     out = []
     for comp in name.split("/"):
@@ -81,6 +114,15 @@ def build_archive_a(path):
         ("a//b.txt", b"ab", tarfile.REGTYPE),
         ("a/./c.txt", b"ac", tarfile.REGTYPE),
         ("link.txt", b"hello.txt", tarfile.SYMTYPE),
+        ("x\nOK\t/etc/passwd", b"line break in a name", tarfile.REGTYPE),
+        ("../y\nOK\t/etc/cron.d/z", b"line break in a rejected name", tarfile.REGTYPE),
+        ("tab\there.txt", b"tab", tarfile.REGTYPE),
+        ("del\x7f.txt", b"del", tarfile.REGTYPE),
+        ("nel\x85.txt", b"next line", tarfile.REGTYPE),
+        ("back\\slash.txt", b"backslash", tarfile.REGTYPE),
+        ("ls\u2028OK\t/etc/passwd", b"line separator in a name", tarfile.REGTYPE),
+        ("ps\u2029.txt", b"paragraph separator", tarfile.SYMTYPE),
+        ("link\nOK\t/etc/shadow", b"x", tarfile.SYMTYPE),
         ("p" * 50 + "/" + "x" * 70 + ".txt", b"long name split over prefix", tarfile.REGTYPE),
         ("deep/" + "/".join(f"d{i}" for i in range(8)) + "/leaf.txt", b"leaf", tarfile.REGTYPE),
     ]
@@ -102,26 +144,57 @@ def build_archive_a(path):
     return entries
 
 
-def expected_manifest(entries_data):
+def under(dest, rel):
+    """The printed path of `rel` under `dest`."""
+    if dest == "":
+        return rel
+    return dest + rel if dest.endswith("/") else dest + "/" + rel
+
+
+def expected_manifest(entries_data, dest="out"):
     """Expected manifest lines from the spec, in archive order.
     entries_data: list of (name, data, typeflag_byte)."""
     lines = []
     for name, data, tcode in entries_data:
         if tcode not in (ord("0"), 0):
-            lines.append(f"SKIP\t{name}\t{tcode}")
+            lines.append(f"SKIP\t{escape_name(name)}\t{tcode}")
             continue
         rel = spec_gate(name)
         if rel is None:
-            lines.append(f"REJECT\t{name}")
+            lines.append(f"REJECT\t{escape_name(name)}")
         else:
-            joined = "/".join(["out"] + rel)
-            lines.append(f"OK\t{joined}\t{len(data)}\t{sum(data)}")
+            lines.append(f"OK\t{under(dest, '/'.join(rel))}\t{len(data)}\t{sum(data)}")
     return lines
 
 
+def output_lines(stdout):
+    """The lines a command printed: split on LF only, as the format is.
+    Output that does not end in LF gives a line that matches nothing."""
+    if stdout and not stdout.endswith("\n"):
+        return stdout.split("\n") + ["(no LF at the end)"]
+    return stdout.split("\n")[:-1] if stdout else []
+
+
+def list_rows(stdout):
+    """(name, size, typeflag) for each line `list` printed, or a row
+    that matches nothing when a line has not three fields."""
+    rows = []
+    for line in output_lines(stdout):
+        parts = line.split("\t")
+        try:
+            rows.append((parts[0], int(parts[1]), int(parts[2])) if len(parts) == 3 else (line,))
+        except ValueError:
+            rows.append((line,))
+    return rows
+
+
 def main():
-    if not EXE.exists():
-        subprocess.run(["lake", "build"], cwd=PILOT_DIR, check=True)
+    # A run that stops early must not leave an earlier passing record.
+    RESULTS.unlink(missing_ok=True)
+    build = subprocess.run(["lake", "build"], cwd=PILOT_DIR, capture_output=True, text=True)
+    if build.returncode != 0:
+        print(build.stdout + build.stderr)
+        sys.exit("lake build failed")
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -140,15 +213,13 @@ def main():
         # 1. list: Lean agrees with tarfile on name, size, typeflag.
         r = run_lean("list", str(archive_a))
         check("list-exit", r.returncode == 0, r.stderr)
-        lean_list = []
-        for line in r.stdout.splitlines():
-            parts = line.split("\t")
-            lean_list.append((parts[0], int(parts[1]), int(parts[2])))
+        lean_list = [row for row in list_rows(r.stdout)]
         # tarfile strips the trailing slash from directory names when
         # reading; the raw header keeps it. Normalize both sides.
-        norm = lambda nl: [(n.rstrip("/") if t == 53 else n, s, t) for (n, s, t) in nl]
+        norm = lambda nl: [(n[0].rstrip("/"),) + tuple(n[1:]) if len(n) == 3 and n[2] == 53 else n
+                           for n in nl]
         lean_list, ref_list = norm(lean_list), norm(
-            [(n, len(d), t) for (n, d, t) in ref_entries])
+            [(escape_name(n), len(d), t) for (n, d, t) in ref_entries])
         check("list-match", lean_list == ref_list,
               f"lean={lean_list} ref={ref_list}")
 
@@ -156,12 +227,25 @@ def main():
         r = run_lean("manifest", str(archive_a), "out")
         check("manifest-exit", r.returncode == 0, r.stderr)
         norm_skip = lambda ls: [
-            "\t".join([p[0], p[1].rstrip("/")] + p[2:]) if l.startswith("SKIP")
+            "\t".join([p[0], p[1].rstrip("/")] + p[2:]) if l.startswith("SKIP") and len(p) > 1
             else l for l in ls for p in [l.split("\t")]]
-        lean_manifest = norm_skip(r.stdout.splitlines())
+        lean_manifest = norm_skip(output_lines(r.stdout))
         exp_manifest = norm_skip(expected_manifest(ref_entries))
         check("manifest-match", lean_manifest == exp_manifest,
               f"lean={lean_manifest} expected={exp_manifest}")
+
+        # 2b. Other destinations: the printed path is the destination as
+        # given, then the entry's components, with no doubled `/`.
+        for dest in ["out/", "/", "", "/srv/data", "a//b", "../up", "./o"]:
+            r = run_lean("manifest", str(archive_a), dest)
+            check(f"manifest-dest {dest!r}",
+                  r.returncode == 0 and
+                  norm_skip(output_lines(r.stdout)) == norm_skip(expected_manifest(ref_entries, dest)),
+                  f"rc={r.returncode} lean={output_lines(r.stdout)[:3]}")
+        for dest in ["out\nOK", "o\tut", "o\x7f", "o\u2028ut", "o\ufffdut"]:
+            r = run_lean("manifest", str(archive_a), dest)
+            check(f"manifest-dest-refused {dest!r}", r.returncode == 2 and r.stdout == "",
+                  f"rc={r.returncode} out={r.stdout[:100]!r}")
         ok_count = sum(1 for l in exp_manifest if l.startswith("OK"))
         rej_count = sum(1 for l in exp_manifest if l.startswith("REJECT"))
         skip_count = sum(1 for l in exp_manifest if l.startswith("SKIP"))
@@ -193,8 +277,8 @@ def main():
             for rel, data in files.items():
                 joined = "/".join(["out"] + spec_gate(rel))
                 exp2.append(f"OK\t{joined}\t{len(data)}\t{sum(data)}")
-            check("self-manifest", r2.stdout.splitlines() == exp2,
-                  f"lean={r2.stdout.splitlines()} expected={exp2}")
+            check("self-manifest", output_lines(r2.stdout) == exp2,
+                  f"lean={output_lines(r2.stdout)} expected={exp2}")
 
         # 5. Hostile and broken input must fail cleanly, not crash.
         raw = archive_a.read_bytes()
@@ -213,17 +297,26 @@ def main():
         r = run_lean("list", str(badsum))
         check("bad-checksum-fails", r.returncode == 1, f"rc={r.returncode}")
 
-    # 6. Axiom check: only the three standard axioms.
+    # 6. Axiom check: Verify.lean prints the axioms of exactly the
+    # theorems in THEOREMS, and each depends on the three standard axioms
+    # at most. Any other axiom, `sorryAx` included, fails the check.
     ax = subprocess.run(["lake", "env", "lean", "TarPilot/Verify.lean"],
                         cwd=PILOT_DIR, capture_output=True, text=True)
     ax_out = ax.stdout + ax.stderr
     check("axioms-run", ax.returncode == 0, ax_out[:400])
-    for thm in ["gate_sound", "cleanComponents_sound", "extractAll_safe",
-                "extractArchive_safe"]:
-        check(f"axioms-{thm}", thm in ax_out, ax_out[:400])
-    bad_axioms = [w for w in ["sorryAx"] if w in ax_out]
-    check("axioms-no-sorry", not bad_axioms, ax_out[:400])
+    allowed = {"propext", "Classical.choice", "Quot.sound"}
+    records = {}
+    for m in re.finditer(r"'([\w.]+)' depends on axioms: \[(.*?)\]", ax_out, re.DOTALL):
+        records[m.group(1)] = {a.strip() for a in m.group(2).split(",") if a.strip()}
+    for m in re.finditer(r"'([\w.]+)' does not depend on any axioms", ax_out):
+        records[m.group(1)] = set()
+    expected = {f"TarPilot.{t}" for t in THEOREMS}
+    check("axioms-names", set(records) == expected,
+          f"printed {sorted(records)}, expected {sorted(expected)}")
+    for name, used in sorted(records.items()):
+        check(f"axioms-{name}", used <= allowed, f"axioms: {sorted(used)}")
 
+    axiom_checks = len(records) + 2
     lean_ver = subprocess.run(["lean", "--version"], capture_output=True,
                               text=True).stdout.strip()
 
@@ -233,7 +326,7 @@ def main():
         f"Run by `tests/run_tests.py` against Python's `tarfile` module.",
         f"Lean: {lean_ver}. Python: {sys.version.split()[0]}.",
         "",
-        f"- Checks run: {checks}",
+        f"- Checks run: {checks} ({axiom_checks} of them on the axioms of the theorems)",
         f"- Failures: {len(failures)}",
         f"- Archive A entries compared (list and manifest): {len(ref_entries)}",
         f"- Manifest outcome on archive A: {ok_count} extracted, "

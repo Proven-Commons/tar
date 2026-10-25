@@ -5,9 +5,16 @@
   or a subset of them. Any other name here breaks the verified bar.
 -/
 
-import TarPilot.Archive
+import Proofs
 
-#print axioms TarPilot.gate_sound
-#print axioms TarPilot.cleanComponents_sound
-#print axioms TarPilot.extractAll_safe
-#print axioms TarPilot.extractArchive_safe
+#print axioms TarPilot.gate_eq
+#print axioms TarPilot.gate_plain
+#print axioms TarPilot.manifest_eq
+#print axioms TarPilot.manifest_extracted
+#print axioms TarPilot.manifest_lines
+#print axioms TarPilot.manifest_lines_eq
+#print axioms TarPilot.extractAll_contained
+#print axioms TarPilot.extractAll_joined
+#print axioms TarPilot.extractAll_resolves_inside
+#print axioms TarPilot.extractArchive_eq
+#print axioms TarPilot.extractArchive_resolves_inside

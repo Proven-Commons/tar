@@ -2,10 +2,10 @@
   Whole-archive parsing, extraction, and writing.
 
   The extraction rule is the proved part, together with the path gate
-  in `Path.lean`: `extractAll` only emits a path built as
-  `dest ++ rel`, where `rel` passed the gate, and the theorem
-  `extractAll_safe` states that every emitted relative path has no
-  `..`, no empty component, no `.`, and is not empty.
+  in `Path.lean`: `extractAll` only emits a path built as `dest ++ rel`,
+  where `rel` passed the gate. `manifest` is what the command-line tool
+  prints, and its extracted entries are exactly the output of
+  `extractAll`. The proofs are in `Proofs/Contain.lean`.
 
   Parsing and writing are covered by differential tests against
   Python's `tarfile` module (see `tests/`), not by a proof.
@@ -67,57 +67,78 @@ def extractAll (dest : List String) (entries : List RawEntry) :
       (gate e.name).map fun rel => (dest ++ rel, e.data)
     else none
 
-/-- Every path `extractAll` emits is the destination followed by a
-    gated relative path: no `..`, no empty component, no `.`, and the
-    relative path is not empty. So no emitted path escapes the
-    destination. -/
-theorem extractAll_safe : ∀ (dest : List String) (entries : List RawEntry)
-    (path : List String) (bytes : ByteArray),
-    (path, bytes) ∈ extractAll dest entries →
-    ∃ rel, path = dest ++ rel ∧
-      ".." ∉ rel ∧ "" ∉ rel ∧ "." ∉ rel ∧ rel ≠ [] := by
-  intro dest entries path bytes h
-  unfold extractAll at h
-  rw [List.mem_filterMap] at h
-  obtain ⟨e, _, hfe⟩ := h
-  by_cases hreg : isRegular e
-  · rw [if_pos hreg] at hfe
-    cases hg : gate e.name with
-    | none =>
-      rw [hg] at hfe
-      simp at hfe
-    | some rel =>
-      rw [hg] at hfe
-      simp only [Option.map_some, Option.some.injEq, Prod.mk.injEq] at hfe
-      obtain ⟨hpath, _⟩ := hfe
-      obtain ⟨h1, h2, h3, h4⟩ := gate_sound e.name rel hg
-      exact ⟨rel, hpath.symm, h1, h2, h3, h4⟩
-  · rw [if_neg hreg] at hfe
-    exact absurd hfe (by simp)
-
 /-- Parse, then extract. -/
 def extractArchive (dest : List String) (data : ByteArray) :
     Option (List (List String × ByteArray)) :=
   (parseArchive data).map (extractAll dest)
 
-/-- The same guarantee for a whole archive read from bytes. -/
-theorem extractArchive_safe : ∀ (dest : List String) (data : ByteArray)
-    (out : List (List String × ByteArray)) (path : List String)
-    (bytes : ByteArray),
-    extractArchive dest data = some out → (path, bytes) ∈ out →
-    ∃ rel, path = dest ++ rel ∧
-      ".." ∉ rel ∧ "" ∉ rel ∧ "." ∉ rel ∧ rel ≠ [] := by
-  intro dest data out path bytes h hmem
-  unfold extractArchive at h
-  cases hp : parseArchive data with
-  | none =>
-    rw [hp] at h
-    simp at h
-  | some entries =>
-    rw [hp] at h
-    simp only [Option.map_some, Option.some.injEq] at h
-    subst h
-    exact extractAll_safe dest entries path bytes hmem
+/-- What extraction does with one entry. -/
+inductive Outcome where
+  /-- A regular file, written at this path. -/
+  | extract (path : List String) (data : ByteArray)
+  /-- A regular file whose name fails the gate. -/
+  | reject (name : String)
+  /-- An entry that is not a regular file. -/
+  | skip (name : String) (typeflag : Char)
+
+/-- The outcome for one entry, under the destination `dest`. -/
+def outcome (dest : List String) (e : RawEntry) : Outcome :=
+  if isRegular e then
+    match gate e.name with
+    | some rel => .extract (dest ++ rel) e.data
+    | none => .reject e.name
+  else .skip e.name e.typeflag
+
+/-- The path and data of an extracted entry. -/
+def Outcome.extracted : Outcome → Option (List String × ByteArray)
+  | .extract path data => some (path, data)
+  | _ => none
+
+/-- The outcome for every entry, in archive order: what the command-line
+    tool prints. -/
+def manifest (dest : List String) (entries : List RawEntry) : List Outcome :=
+  entries.map (outcome dest)
+
+/-- The components of the destination the command-line tool is given.
+    An empty destination means the current directory. A final `/` adds
+    no empty component, so the path under `out/` is `out/a`, not
+    `out//a`. -/
+def destComponents (dest : String) : List String :=
+  if dest = "" then []
+  else if dest.toList.getLast? = some '/' then (splitPath dest).dropLast
+  else splitPath dest
+
+/-- A path as one string, its components joined with `/`. -/
+def joinPath (path : List String) : String :=
+  String.intercalate "/" path
+
+/-- The sum of the bytes, printed as a check on the data. -/
+def byteSum (b : ByteArray) : Nat :=
+  b.toList.foldl (fun a x => a + x.toNat) 0
+
+/-- One character of a printed name: a backslash as `\\`, a control
+    character as `\x` and two hex digits, the line and paragraph
+    separators as `\u2028` and `\u2029`, any other as itself. -/
+def escapeChar (c : Char) : List Char :=
+  if c = '\\' then ['\\', '\\']
+  else if c.toNat == 0x2028 then "\\u2028".toList
+  else if c.toNat == 0x2029 then "\\u2029".toList
+  else if isSpecialChar c then
+    let hex := "0123456789abcdef".toList
+    ['\\', 'x', hex.getD (c.toNat / 16) '0', hex.getD (c.toNat % 16) '0']
+  else [c]
+
+/-- A name as the tool prints it, with no special character left, so it
+    cannot break a line or a field. -/
+def escapeName (s : String) : String :=
+  String.ofList (s.toList.flatMap escapeChar)
+
+/-- The line the command-line tool prints for one outcome. -/
+def Outcome.line : Outcome → String
+  | .extract path data =>
+    "OK\t" ++ joinPath path ++ "\t" ++ toString data.size ++ "\t" ++ toString (byteSum data)
+  | .reject name => "REJECT\t" ++ escapeName name
+  | .skip name typeflag => "SKIP\t" ++ escapeName name ++ "\t" ++ toString typeflag.toNat
 
 /-- Build an archive from `(name, data)` pairs as regular files.
     Ends with two zero blocks, as the format expects. -/
