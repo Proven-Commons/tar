@@ -47,9 +47,12 @@ def cleanName (name : String) : Option (List String) :=
       let kept := parts.filter (fun c => !(c == "" || c == "."))
       if kept = [] then none else some kept
 
-/-- The typeflags of regular files: `0`, and NUL from older archives. -/
-def regularType (t : Char) : Bool :=
-  t == '0' || t == Char.ofNat 0
+/-- Whether an entry with typeflag `t` and name `name` is a regular file:
+    typeflag `0`, NUL from older archives, or `7`, a contiguous file,
+    which POSIX lets a reader treat as regular; and a name that does not
+    end in `/`, which older archives use for a directory. -/
+def regularType (t : Char) (name : String) : Bool :=
+  (t == '0' || t == Char.ofNat 0 || t == '7') && name.toList.getLast? != some '/'
 
 /-- A relative path `rel` under the destination `dest`, as a string: `rel`
     alone when `dest` is empty, `dest` then `rel` when `dest` ends in `/`,
@@ -135,7 +138,7 @@ def byteSum (b : ByteArray) : Nat :=
     whose name fails; `SKIP`, the name, and the typeflag as a decimal
     code, for anything else. -/
 def line (dest : String) (name : String) (t : Char) (data : ByteArray) : String :=
-  if regularType t then
+  if regularType t name then
     match cleanName name with
     | some rel =>
       "OK\t" ++ under dest (String.intercalate "/" rel) ++ "\t" ++ toString data.size ++

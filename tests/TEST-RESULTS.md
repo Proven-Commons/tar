@@ -3,12 +3,14 @@
 Run by `tests/run_tests.py` against Python's `tarfile` module.
 Lean: Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release). Python: 3.13.17.
 
-- Checks run: 35 (13 of them on the axioms of the theorems)
+- Checks run: 100 (13 of them on the axioms of the theorems)
 - Failures: 0
 - Archive A entries compared (list and manifest): 23
 - Manifest outcome on archive A: 10 extracted, 9 rejected by the path gate, 4 skipped as non-regular
 - Files written by the Lean `create` command and read back by Python: 3
 - Broken inputs rejected with exit code 1: truncated archive, random garbage, corrupted checksum
+- Archives in formats the pilot does not read, rejected with exit code 1 by `list` and `manifest`: 27
+- Archives in other formats it reads, compared with tarfile: 11
 
 Axiom check (`TarPilot/Verify.lean`):
 

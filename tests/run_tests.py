@@ -16,6 +16,7 @@ import io
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -97,6 +98,167 @@ def is_regular(ti):
     return ti.isreg()
 
 
+# Typeflags of regular files: `0`, NUL, and `7` (contiguous file).
+REGULAR_CODES = (ord("0"), 0, ord("7"))
+
+
+def is_regular_entry(name, tcode):
+    """A regular file: typeflag `0`, NUL or `7`, and a name that does not
+    end in `/`, which older archives use for a directory."""
+    return tcode in REGULAR_CODES and not name.endswith("/")
+
+
+def one_file(fmt, name, data=b"x", typ=tarfile.REGTYPE, pax=None):
+    """An archive of one entry, written by Python's tarfile."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=fmt) as t:
+        ti = tarfile.TarInfo(name)
+        ti.size = len(data)
+        ti.type = typ
+        ti.mtime = 0
+        if pax:
+            ti.pax_headers = pax
+        t.addfile(ti, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def patch_header(raw, offset, new_bytes):
+    """Overwrite bytes in the first header and fix its checksum."""
+    hdr = bytearray(raw[:512])
+    hdr[offset:offset + len(new_bytes)] = new_bytes
+    hdr[148:156] = b" " * 8
+    hdr[148:156] = ("%06o\0 " % sum(hdr)).encode()
+    return bytes(hdr) + raw[512:]
+
+
+LONG = "d/" + "n" * 120 + ".txt"
+SPLIT = "p" * 30 + "/" + "q" * 90 + "/file.txt"
+
+
+def unsupported_archives(work):
+    """Archives that use what the pilot does not read. Each must fail to
+    parse: these are the probes of findings F2, F3 and F7 of the bar
+    audit, and more of the same kinds."""
+    yield "GNU long name entry (typeflag L)", one_file(tarfile.GNU_FORMAT, LONG)
+    yield "GNU long link entry (typeflag K)", patch_header(
+        one_file(tarfile.GNU_FORMAT, "l.txt"), 156, b"K")
+    yield "pax long path (typeflag x)", one_file(tarfile.PAX_FORMAT, LONG)
+    yield "pax path override", one_file(tarfile.PAX_FORMAT, "safe.txt",
+                                        pax={"path": "other/dir/real.txt"})
+    yield "pax path override that climbs out", one_file(
+        tarfile.PAX_FORMAT, "safe.txt", pax={"path": "../../etc/cron.d/x"})
+    yield "pax non-ASCII name", one_file(tarfile.PAX_FORMAT, "café/notes.txt")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT,
+                      pax_headers={"comment": "global"}) as t:
+        ti = tarfile.TarInfo("g.txt")
+        ti.size = 1
+        t.addfile(ti, io.BytesIO(b"g"))
+    yield "pax global header (typeflag g)", buf.getvalue()
+    split = one_file(tarfile.USTAR_FORMAT, SPLIT)
+    yield "split name, invalid UTF-8 in the prefix field only", patch_header(split, 345, b"\xff")
+    yield "split name, invalid UTF-8 in the name field only", patch_header(split, 0, b"\xff")
+    yield "split name, invalid UTF-8 in both fields", patch_header(
+        patch_header(split, 0, b"\xff"), 345, b"\xff")
+    yield "short name, invalid UTF-8", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "short.txt"), 0, b"\xff")
+    gnu = one_file(tarfile.GNU_FORMAT, "a.txt")
+    yield "GNU header with access and change times (incremental dump)", patch_header(
+        gnu, 345, b"15267276047\x0015267276047\x00")
+    yield "GNU header with a sparse map", patch_header(gnu, 386, b"00000000001")
+    for code in b"DMNSVAZ":
+        yield f"unknown typeflag {chr(code)}", patch_header(
+            one_file(tarfile.USTAR_FORMAT, "u.txt"), 156, bytes([code]))
+    yield "base-256 size field", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "b.txt"), 124, b"\x80" + b"\x00" * 10 + b"\x01")
+    yield "ustar magic with a GNU version", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "m.txt"), 263, b" \x00")
+    yield "no magic (old Unix V7 header)", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "v.txt"), 257, b"\x00" * 8)
+    for name, typ in [("d/", tarfile.AREGTYPE), ("e/", tarfile.REGTYPE)]:
+        yield f"name ending in / with typeflag {typ!r} and data", one_file(
+            tarfile.USTAR_FORMAT, name, data=b"x", typ=typ)
+    yield "size field of spaces", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "f", data=b""), 124, b" " * 12)
+    gnu_tar = shutil.which("tar")
+    if gnu_tar:
+        src = work / "systar-long" / "d"
+        src.mkdir(parents=True)
+        (src / ("n" * 120 + ".txt")).write_bytes(b"x")
+        out = work / "systar-long.tar"
+        subprocess.run([gnu_tar, "cf", str(out), "d"], cwd=work / "systar-long", check=True)
+        yield "system tar, default format, long name", out.read_bytes()
+
+
+def readable_archives(work):
+    """Archives in formats the pilot reads. Each must read as Python's
+    tarfile reads it."""
+    yield "contiguous file (typeflag 7)", one_file(
+        tarfile.USTAR_FORMAT, "contig.bin", data=b"contiguous", typ=tarfile.CONTTYPE)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.GNU_FORMAT) as t:
+        for name, data in [("gnu.txt", b"gnu"), ("dir/inner.bin", bytes(range(40)))]:
+            ti = tarfile.TarInfo(name)
+            ti.size = len(data)
+            ti.mtime = 0
+            t.addfile(ti, io.BytesIO(data))
+    yield "GNU format, short names", buf.getvalue()
+    yield "pax format, short ASCII name (no pax header)", one_file(
+        tarfile.PAX_FORMAT, "plain.txt", data=b"plain")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        for name, typ, data in [("olddir/", tarfile.AREGTYPE, b""),
+                                ("olddir/f.txt", tarfile.AREGTYPE, b"old"),
+                                ("slashdir/", tarfile.REGTYPE, b"")]:
+            ti = tarfile.TarInfo(name)
+            ti.type = typ
+            ti.size = len(data)
+            ti.mtime = 0
+            t.addfile(ti, io.BytesIO(data))
+    yield "names ending in / with typeflags NUL and 0, read as directories", buf.getvalue()
+    for typ in [tarfile.LNKTYPE, tarfile.SYMTYPE, tarfile.CHRTYPE, tarfile.BLKTYPE,
+                tarfile.DIRTYPE, tarfile.FIFOTYPE]:
+        yield f"typeflag {typ.decode()} with a size field, then two files", hidden_after(typ)
+    gnu_tar = shutil.which("tar")
+    if gnu_tar:
+        src = work / "systar-short"
+        (src / "d").mkdir(parents=True)
+        (src / "a.txt").write_bytes(b"hi\n")
+        (src / "d" / "b.txt").write_bytes(b"x\n")
+        out = work / "systar-short.tar"
+        subprocess.run([gnu_tar, "cf", str(out), "a.txt", "d"], cwd=src, check=True)
+        yield "system tar, default format, short names", out.read_bytes()
+
+
+def hidden_after(typ):
+    """An entry of type `typ` whose size field says 1024, then a header and
+    data that fill those 1024 bytes, then one more file. Types 1 to 6
+    store no data, so a reader must see all three entries."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        for name, kind, data in [("node", typ, b""), ("hidden.txt", tarfile.REGTYPE, b"hidden"),
+                                 ("b.txt", tarfile.REGTYPE, b"b")]:
+            ti = tarfile.TarInfo(name)
+            ti.type = kind
+            ti.size = len(data)
+            ti.mtime = 0
+            if kind in (tarfile.SYMTYPE, tarfile.LNKTYPE):
+                ti.linkname = "target"
+            t.addfile(ti, io.BytesIO(data))
+    return patch_header(buf.getvalue(), 124, b"00000002000\0")
+
+
+def tarfile_view(path):
+    """(name, data, typeflag code) for each entry, as tarfile reads it."""
+    out = []
+    with tarfile.open(path) as tf:
+        for m in tf.getmembers():
+            data = tf.extractfile(m).read() if m.isreg() else b""
+            tcode = m.type[0] if isinstance(m.type, bytes) else ord(m.type)
+            out.append((m.name, data, tcode))
+    return out
+
+
 def build_archive_a(path):
     """Archive with normal, hostile, and edge-case entries, built with
     Python's tarfile as the reference implementation."""
@@ -156,7 +318,7 @@ def expected_manifest(entries_data, dest="out"):
     entries_data: list of (name, data, typeflag_byte)."""
     lines = []
     for name, data, tcode in entries_data:
-        if tcode not in (ord("0"), 0):
+        if not is_regular_entry(name, tcode):
             lines.append(f"SKIP\t{escape_name(name)}\t{tcode}")
             continue
         rel = spec_gate(name)
@@ -269,6 +431,13 @@ def main():
                     if m.isreg():
                         got[m.name] = tf.extractfile(m).read()
         check("create-readback", got == files, f"got={list(got)} want={list(files)}")
+        # A name too long for the name field, with no `/` to split it at,
+        # fails with exit code 1 and writes nothing.
+        target = td / "bad.tar"
+        (src / ("n" * 101)).write_bytes(b"x")
+        r = run_lean("create", str(target), "n" * 101, cwd=src)
+        check("create-refuses-long-name", r.returncode == 1 and not target.exists(),
+              f"rc={r.returncode} exists={target.exists()}")
 
         # 4. Lean reads its own archive back with the same manifest.
         if r.returncode == 0:
@@ -297,7 +466,38 @@ def main():
         r = run_lean("list", str(badsum))
         check("bad-checksum-fails", r.returncode == 1, f"rc={r.returncode}")
 
-    # 6. Axiom check: Verify.lean prints the axioms of exactly the
+        # 6. Formats the pilot does not read fail to parse, with exit
+        # code 1 and nothing on standard output, for both commands.
+        unsupported = 0
+        for i, (label, raw) in enumerate(unsupported_archives(td)):
+            unsupported += 1
+            path = td / f"unsupported{i}.tar"
+            path.write_bytes(raw)
+            for cmd in (["list", str(path)], ["manifest", str(path), "out"]):
+                r = run_lean(*cmd)
+                check(f"unsupported-fails: {label} ({cmd[0]})",
+                      r.returncode == 1 and r.stdout == "",
+                      f"rc={r.returncode} out={r.stdout[:200]!r}")
+
+        # 7. Formats the pilot reads give what tarfile reads.
+        readable = 0
+        for i, (label, raw) in enumerate(readable_archives(td)):
+            readable += 1
+            path = td / f"readable{i}.tar"
+            path.write_bytes(raw)
+            ref = tarfile_view(path)
+            r = run_lean("manifest", str(path), "out")
+            # tarfile reports an old-style directory (typeflag NUL, name
+            # ending in `/`) as typeflag 5, so SKIP lines are compared
+            # without their typeflag here.
+            drop_code = lambda ls: [l.rsplit("\t", 1)[0] if l.startswith("SKIP") else l
+                                    for l in norm_skip(ls)]
+            got = drop_code(output_lines(r.stdout))
+            want = drop_code(expected_manifest(ref))
+            check(f"readable-manifest: {label}", r.returncode == 0 and got == want,
+                  f"rc={r.returncode} lean={got} expected={want}")
+
+    # 8. Axiom check: Verify.lean prints the axioms of exactly the
     # theorems in THEOREMS, and each depends on the three standard axioms
     # at most. Any other axiom, `sorryAx` included, fails the check.
     ax = subprocess.run(["lake", "env", "lean", "TarPilot/Verify.lean"],
@@ -334,6 +534,9 @@ def main():
         f"- Files written by the Lean `create` command and read back by Python: {len(files)}",
         "- Broken inputs rejected with exit code 1: truncated archive, "
         "random garbage, corrupted checksum",
+        f"- Archives in formats the pilot does not read, rejected with exit code 1 "
+        f"by `list` and `manifest`: {unsupported}",
+        f"- Archives in other formats it reads, compared with tarfile: {readable}",
         "",
         "Axiom check (`TarPilot/Verify.lean`):",
         "",
