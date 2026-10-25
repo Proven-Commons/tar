@@ -1,0 +1,41 @@
+name: Proofs and differential tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+      - name: Install Lean and bubblewrap
+        run: sh .github/scripts/setup-lean.sh
+      - name: Build, regressions, differential tests and axiom allowlist
+        run: |
+          rm -f tests/TEST-RESULTS.md
+          python3 tests/run_tests.py
+      - name: Replay proofs under all six kernels in the sandbox
+        run: lake check --paranoid
+      - name: Save the differential test report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tar-test-results
+          path: tests/TEST-RESULTS.md
+          if-no-files-found: error

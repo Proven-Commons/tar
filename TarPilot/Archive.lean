@@ -34,7 +34,12 @@ def parseBlocks (data : ByteArray) (off : Nat) : Nat → Option (List RawEntry)
     if off + 512 > data.size then none
     else
       let block := data.extract off (off + 512)
-      if block.toList.all (· = 0) then some []
+      if block.toList.all (· = 0) then
+        -- Require two end blocks, then only zero record padding. Reject
+        -- hidden trailing entries instead of returning a clean prefix.
+        if off + 1024 > data.size then none
+        else if (data.extract off data.size).toList.all (· = 0) then some []
+        else none
       else match parseBlock block with
         | none => none
         | some h =>
@@ -49,13 +54,14 @@ def parseBlocks (data : ByteArray) (off : Nat) : Nat → Option (List RawEntry)
 
 /-- Parse a whole archive. -/
 def parseArchive (data : ByteArray) : Option (List RawEntry) :=
-  parseBlocks data 0 (data.size / 512 + 1)
+  if data.size % 512 != 0 then none
+  else parseBlocks data 0 (data.size / 512 + 1)
 
-/-- Regular files only: typeflag `0` or NUL. Directories, links, and
+/-- Data files only: typeflag `0`, NUL, or `7`. Directories, links, and
     everything else are never extracted, so a link entry cannot be used
     to place a later entry outside the destination. -/
 def isRegular (e : RawEntry) : Bool :=
-  e.typeflag == '0' || e.typeflag == Char.ofNat 0
+  isRegularType e.typeflag
 
 /-- The extraction decision shared by the CLI and the in-memory model. -/
 def extractEntry (dest : List String) (e : RawEntry) : Option (List String × ByteArray) :=

@@ -23,6 +23,8 @@ import tarfile
 import tempfile
 from pathlib import Path
 
+from parser_cases import run_parser_cases
+
 PILOT_DIR = Path(__file__).resolve().parent.parent
 EXE = PILOT_DIR / ".lake" / "build" / "bin" / "tar-pilot"
 RESULTS = PILOT_DIR / "tests" / "TEST-RESULTS.md"
@@ -43,7 +45,7 @@ def check(name, ok, detail=""):
 
 
 def run_lean(*args, cwd=None):
-    return subprocess.run([str(EXE), *args], capture_output=True, text=True, cwd=cwd)
+    return subprocess.run([str(EXE), *args], capture_output=True, text=True, cwd=cwd, timeout=15)
 
 
 def spec_gate(name):
@@ -112,7 +114,7 @@ def expected_manifest(entries_data, dest="out"):
     entries_data: list of (name, data, typeflag_byte)."""
     lines = []
     for name, data, tcode in entries_data:
-        if tcode not in (ord("0"), 0):
+        if tcode not in (ord("0"), 0, ord("7")):
             lines.append(f"SKIP\t{name}\t{tcode}")
             continue
         rel = spec_gate(name)
@@ -127,10 +129,11 @@ def expected_manifest(entries_data, dest="out"):
 def main():
     # Rebuild even if the binary exists: source edits must reach the tests.
     subprocess.run(["lake", "build"], cwd=PILOT_DIR, check=True)
-    regression = subprocess.run(["lake", "env", "lean", "tests/PathSafety.lean"],
-                                cwd=PILOT_DIR, capture_output=True, text=True)
-    check("path-regressions", regression.returncode == 0,
-          regression.stdout + regression.stderr)
+    for name in ("PathSafety", "HeaderSafety"):
+        regression = subprocess.run(["lake", "env", "lean", f"tests/{name}.lean"],
+                                    cwd=PILOT_DIR, capture_output=True, text=True)
+        check(f"{name}-regressions", regression.returncode == 0,
+              regression.stdout + regression.stderr)
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -263,6 +266,8 @@ def main():
                 posixpath.commonpath([root, path]) == root and path != root for path in resolved),
                 f"root={root}, paths={resolved[:5]}")
 
+        parser_counts = run_parser_cases(td, run_lean, check, expected_manifest)
+
     # 7. Axiom check: every named theorem must print only standard axioms.
     ax = subprocess.run(["lake", "env", "lean", "TarPilot/Verify.lean"],
                         cwd=PILOT_DIR, capture_output=True, text=True)
@@ -295,7 +300,12 @@ def main():
         f"- Files written by the Lean `create` command and read back by Python: {len(files)}",
         f"- Path regression entries: {len(path_entries)} ({PATH_RANDOM_CASES} random, seed {PATH_SEED}), "
         f"compared with the spec under {len(DESTINATIONS)} destinations and checked with `posixpath`",
-        "- `tests/PathSafety.lean`: cleaner, gate, joined-path and relative-resolution regressions",
+        "- Lean regressions: `tests/PathSafety.lean` (paths and resolution) and "
+        "`tests/HeaderSafety.lean` (UTF-8 decoding and header writing)",
+        f"- Parser archives: {parser_counts['accepted']} compared with Python tarfile "
+        f"({parser_counts['entries']} entries), {parser_counts['rejected']} rejected with no output",
+        f"- Parser seed: {parser_counts['seed']}; {parser_counts['random_archives']} random valid archives "
+        f"and {parser_counts['mutated_archives']} mutated archives; every case checks list and manifest",
         "- Broken inputs rejected with exit code 1: truncated archive, "
         "random garbage, corrupted checksum",
         "",
