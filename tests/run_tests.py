@@ -10,8 +10,19 @@ below. Run from anywhere:
 It builds the Lean project first, so it never checks stale code, runs
 all cases in a temporary directory, writes `tests/TEST-RESULTS.md`, and
 exits non-zero if any case fails.
+
+With `--tool REV`, the checks on the tool run against the tool built
+from commit REV, in a temporary directory, instead of this checkout's.
+The checkout is not changed or built. The axiom check reads this
+checkout's proofs, not the tool, so it is left out. The record goes to
+`tests/TEST-RESULTS-REV.md`, with REV as a short hash, and
+`tests/TEST-RESULTS.md` is left as it is. This shows which of these
+checks an earlier tool fails:
+
+    python3 tests/run_tests.py --tool 1273382
 """
 
+import argparse
 import io
 import os
 import random
@@ -412,16 +423,56 @@ def skip_as_tarfile_reads(line):
     return line
 
 
-def main():
-    # A run that stops early must not leave an earlier passing record.
-    RESULTS.unlink(missing_ok=True)
-    build = subprocess.run(["lake", "build"], cwd=PILOT_DIR, capture_output=True, text=True)
+def commit_of(rev):
+    """The short hash of commit `rev`."""
+    r = subprocess.run(["git", "rev-parse", "--short=7", "--verify", rev + "^{commit}"],
+                       cwd=PILOT_DIR, capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"not a commit: {rev}")
+    return r.stdout.strip()
+
+
+def tool_at(rev, td):
+    """Build the tool at commit `rev` in `td`. The checkout is not
+    changed."""
+    src = td / "tool-src"
+    src.mkdir()
+    r = subprocess.run(["git", "archive", "--format=tar", rev], cwd=PILOT_DIR,
+                       capture_output=True)
+    if r.returncode != 0:
+        sys.exit(f"git archive {rev} failed: {r.stderr.decode()}")
+    with tarfile.open(fileobj=io.BytesIO(r.stdout)) as tf:
+        tf.extractall(src, filter="data")
+    build = subprocess.run(["lake", "build", "tar-pilot"], cwd=src, capture_output=True,
+                           text=True)
     if build.returncode != 0:
         print(build.stdout + build.stderr)
-        sys.exit("lake build failed")
+        sys.exit(f"lake build failed at {rev}")
+    return src / ".lake" / "build" / "bin" / "tar-pilot"
+
+
+def main():
+    global EXE
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--tool", metavar="REV",
+                    help="check the tool built from commit REV instead of this checkout's, "
+                         "and leave out the axiom check")
+    args = ap.parse_args()
+    rev = commit_of(args.tool) if args.tool else None
+    results = RESULTS if rev is None else PILOT_DIR / "tests" / f"TEST-RESULTS-{rev}.md"
+    # A run that stops early must not leave an earlier passing record.
+    results.unlink(missing_ok=True)
+    if rev is None:
+        build = subprocess.run(["lake", "build"], cwd=PILOT_DIR, capture_output=True,
+                               text=True)
+        if build.returncode != 0:
+            print(build.stdout + build.stderr)
+            sys.exit("lake build failed")
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
+        if rev is not None:
+            EXE = tool_at(rev, td)
         archive_a = td / "a.tar"
         entries = build_archive_a(archive_a)
 
@@ -566,43 +617,55 @@ def main():
 
     # 8. Axiom check: Verify.lean prints the axioms of exactly the
     # theorems in THEOREMS, and each depends on the three standard axioms
-    # at most. Any other axiom, `sorryAx` included, fails the check.
-    ax = subprocess.run(["lake", "env", "lean", "TarPilot/Verify.lean"],
-                        cwd=PILOT_DIR, capture_output=True, text=True)
-    ax_out = ax.stdout + ax.stderr
-    check("axioms-run", ax.returncode == 0, ax_out[:400])
-    allowed = {"propext", "Classical.choice", "Quot.sound"}
-    records = {}
-    for m in re.finditer(r"'([\w.]+)' depends on axioms: \[(.*?)\]", ax_out, re.DOTALL):
-        records[m.group(1)] = {a.strip() for a in m.group(2).split(",") if a.strip()}
-    for m in re.finditer(r"'([\w.]+)' does not depend on any axioms", ax_out):
-        records[m.group(1)] = set()
-    expected = set(THEOREMS)
-    check("axioms-names", set(records) == expected,
-          f"printed {sorted(records)}, expected {sorted(expected)}")
-    for name, used in sorted(records.items()):
-        check(f"axioms-{name}", used <= allowed, f"axioms: {sorted(used)}")
+    # at most. Any other axiom, `sorryAx` included, fails the check. It
+    # reads this checkout's proofs, so it is left out with `--tool`.
+    if rev is None:
+        ax = subprocess.run(["lake", "env", "lean", "TarPilot/Verify.lean"],
+                            cwd=PILOT_DIR, capture_output=True, text=True)
+        ax_out = ax.stdout + ax.stderr
+        check("axioms-run", ax.returncode == 0, ax_out[:400])
+        allowed = {"propext", "Classical.choice", "Quot.sound"}
+        records = {}
+        for m in re.finditer(r"'([\w.]+)' depends on axioms: \[(.*?)\]", ax_out, re.DOTALL):
+            records[m.group(1)] = {a.strip() for a in m.group(2).split(",") if a.strip()}
+        for m in re.finditer(r"'([\w.]+)' does not depend on any axioms", ax_out):
+            records[m.group(1)] = set()
+        expected = set(THEOREMS)
+        check("axioms-names", set(records) == expected,
+              f"printed {sorted(records)}, expected {sorted(expected)}")
+        for name, used in sorted(records.items()):
+            check(f"axioms-{name}", used <= allowed, f"axioms: {sorted(used)}")
+        axiom_checks = len(records) + 2
 
-    axiom_checks = len(records) + 2
     lean_ver = subprocess.run(["lean", "--version"], capture_output=True,
                               text=True).stdout.strip()
 
+    if rev is None:
+        header = [f"Run by `tests/run_tests.py` against Python's `tarfile` module."]
+        count = f"- Checks run: {checks} ({axiom_checks} of them on the axioms of the theorems)"
+    else:
+        header = [
+            f"Run by `tests/run_tests.py --tool {rev}` against Python's `tarfile` module.",
+            f"The tool was built from commit {rev}, not from this checkout. The axiom",
+            "check reads this checkout's proofs, not the tool, so it is left out.",
+        ]
+        count = f"- Checks run: {checks}, all on the tool"
     lines = [
         "# Test results",
         "",
-        f"Run by `tests/run_tests.py` against Python's `tarfile` module.",
+        *header,
         f"Lean: {lean_ver}. Python: {sys.version.split()[0]}. System tar: {tar_version()}.",
         "",
-        f"- Checks run: {checks} ({axiom_checks} of them on the axioms of the theorems)",
+        count,
         f"- Failures: {len(failures)}",
         f"- Archive A entries compared (list and manifest): {len(ref_entries)}",
         f"- Manifest outcome on archive A: {ok_count} extracted, "
         f"{rej_count} rejected by the path gate, {skip_count} skipped as non-regular",
         f"- Files written by the Lean `create` command and read back by Python: {len(files)}",
-        "- Broken inputs rejected with exit code 1: truncated archive, "
+        "- Broken inputs that must fail with exit code 1: truncated archive, "
         "random garbage, corrupted checksum",
-        f"- Archives in formats the pilot does not read, rejected with exit code 1 "
-        f"by `list` and `manifest`: {unsupported}",
+        f"- Archives in formats the pilot does not read, which must fail with exit code 1 "
+        f"under `list` and `manifest`: {unsupported}",
         f"- Archives in other formats it reads, compared with tarfile under `list` and "
         f"`manifest`: {readable}",
         "",
@@ -613,17 +676,13 @@ def main():
         "tool's typeflag 0 on such an entry is read as 5. Every other typeflag is",
         "compared as printed.",
         "",
-        "Axiom check (`TarPilot/Verify.lean`):",
-        "",
-        "```",
-        ax_out.strip(),
-        "```",
-        "",
     ]
+    if rev is None:
+        lines += ["Axiom check (`TarPilot/Verify.lean`):", "", "```", ax_out.strip(), "```", ""]
     if failures:
         lines += ["## Failures", ""] + [f"- {f}" for f in failures] + [""]
-    RESULTS.write_text("\n".join(lines))
-    print(f"{checks - len(failures)}/{checks} checks passed; results in {RESULTS}")
+    results.write_text("\n".join(lines))
+    print(f"{checks - len(failures)}/{checks} checks passed; results in {results}")
     return 1 if failures else 0
 
 

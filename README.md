@@ -68,6 +68,8 @@ The build fails if a proof breaks, though it accepts a `sorry` with only a warni
 
 `python3 tests/compare_old.py` builds the tool as it was before the containment change (commit 7517a86) and compares the two on 3,000 random archives under five destinations, from a recorded seed. Once the new escapes in names are undone, the output must be the same. It writes `tests/COMPARE-OLD.md`.
 
+`python3 tests/run_tests.py --tool 1273382` runs the same checks against the tool of the containment change (commit 1273382), from before the parser changes. It leaves out the axiom check, which reads this checkout's proofs, not the tool, and writes `tests/TEST-RESULTS-1273382.md`: 68 of the 107 checks fail there.
+
 `python3 tests/planted_bugs.py` plants, one at a time in a copy, a `sorry`, an axiom, an extra theorem that is not on the list, and a listed theorem left out of `TarPilot/Verify.lean`. It records that `lake build` passes on each and that the test script fails. It writes `tests/PLANTED-BUGS.md`.
 
 ## Layout

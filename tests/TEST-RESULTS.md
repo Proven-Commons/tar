@@ -8,8 +8,8 @@ Lean: Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f29
 - Archive A entries compared (list and manifest): 23
 - Manifest outcome on archive A: 10 extracted, 9 rejected by the path gate, 4 skipped as non-regular
 - Files written by the Lean `create` command and read back by Python: 3
-- Broken inputs rejected with exit code 1: truncated archive, random garbage, corrupted checksum
-- Archives in formats the pilot does not read, rejected with exit code 1 by `list` and `manifest`: 29
+- Broken inputs that must fail with exit code 1: truncated archive, random garbage, corrupted checksum
+- Archives in formats the pilot does not read, which must fail with exit code 1 under `list` and `manifest`: 29
 - Archives in other formats it reads, compared with tarfile under `list` and `manifest`: 13
 
 How the output is compared with tarfile. tarfile drops the `/` at the end of a
