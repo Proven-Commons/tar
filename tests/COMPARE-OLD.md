@@ -2,7 +2,7 @@
 
 Written by `tests/compare_old.py`. Rerun it to check these numbers.
 
-- Old tool: commit 7517a86. New tool: this checkout.
+- Old tool: commit 7517a86. New tool: commit 1273382.
 - Lean: Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release). Python: 3.13.17.
 - Seed: 20261025
 - Random archives: 3000, written by Python's `tarfile` in ustar format

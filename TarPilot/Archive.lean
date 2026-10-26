@@ -51,11 +51,16 @@ def parseBlocks (data : ByteArray) (off : Nat) : Nat → Option (List RawEntry)
 def parseArchive (data : ByteArray) : Option (List RawEntry) :=
   parseBlocks data 0 (data.size / 512 + 1)
 
-/-- Regular files only: typeflag `0` or NUL. Directories, links, and
-    everything else are never extracted, so a link entry cannot be used
-    to place a later entry outside the destination. -/
+/-- Regular files only: typeflag `0`, NUL, or `7` (a contiguous file,
+    which POSIX lets a reader treat as regular, as Python's `tarfile`
+    does), and a name that does not end in `/`. Older archives mark a
+    directory with that `/`, and GNU tar reads any entry named so as a
+    directory. Directories, links, and everything else are never
+    extracted, so a link entry cannot be used to place a later entry
+    outside the destination. -/
 def isRegular (e : RawEntry) : Bool :=
-  e.typeflag == '0' || e.typeflag == Char.ofNat 0
+  (e.typeflag == '0' || e.typeflag == Char.ofNat 0 || e.typeflag == '7') &&
+    e.name.toList.getLast? != some '/'
 
 /-- Extract entries into a list of `(path, data)` pairs, in memory.
     The path of each pair is the destination components followed by the

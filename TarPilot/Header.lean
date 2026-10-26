@@ -16,7 +16,8 @@ import TarPilot.Octal
 
 namespace TarPilot
 
-/-- A parsed header. Only the fields the pilot uses. -/
+/-- A parsed header. Only the fields the pilot uses. `size` is the size
+    of the data that follows the header. -/
 structure Header where
   name : String
   size : Nat
@@ -31,11 +32,26 @@ def byteAt (b : ByteArray) (i : Nat) : UInt8 :=
 def sliceList (b : ByteArray) (off len : Nat) : List UInt8 :=
   (b.extract off (off + len)).toList
 
-/-- A name field: bytes up to the first NUL, read as UTF-8.
-    Invalid UTF-8 reads as the empty string. -/
-def bytesToName (bs : List UInt8) : String :=
+/-- A name field: bytes up to the first NUL, read as UTF-8, or `none`
+    when they are not valid UTF-8. -/
+def bytesToName (bs : List UInt8) : Option String :=
   let raw := bs.takeWhile (fun b => b ≠ 0)
-  (String.fromUTF8? (ByteArray.mk raw.toArray)).getD ""
+  String.fromUTF8? (ByteArray.mk raw.toArray)
+
+/-- The magic and version of a POSIX ustar header: `ustar`, NUL, `00`. -/
+def ustarMagic : List UInt8 := [117, 115, 116, 97, 114, 0, 48, 48]
+
+/-- The magic and version of a GNU header: `ustar`, two spaces, NUL. -/
+def gnuMagic : List UInt8 := [117, 115, 116, 97, 114, 32, 32, 0]
+
+/-- The typeflags the pilot reads: NUL and `0` to `7`, the types POSIX
+    ustar defines. Any other typeflag, among them the GNU long name and
+    long link entries `L` and `K`, the pax headers `x` and `g`, and GNU
+    sparse and incremental entries, makes the archive fail to parse:
+    such entries change how other entries read, or carry data the pilot
+    does not read. -/
+def knownTypeflag (t : Char) : Bool :=
+  t == Char.ofNat 0 || ('0' ≤ t && t ≤ '7')
 
 /-- The header checksum: sum of all 512 bytes, with the checksum field
     itself (bytes 148 to 155) counted as spaces. -/
@@ -43,20 +59,38 @@ def blockChecksum (bs : List UInt8) : Nat :=
   (bs.zipIdx).foldl
     (fun acc p => acc + (if 148 ≤ p.2 ∧ p.2 < 156 then 32 else p.1.toNat)) 0
 
-/-- Parse one 512-byte header block. Fails on a short block, a bad
-    magic, a checksum mismatch, or a bad size field. -/
+/-- Parse one 512-byte header block. Fails on a short block; a magic
+    that is neither POSIX ustar nor GNU; a GNU header with anything in
+    the area where ustar keeps its prefix (GNU keeps access and change
+    times, sparse maps and volume offsets there); a checksum mismatch; a
+    bad size field; a typeflag outside `knownTypeflag`; a name or prefix
+    field that is not valid UTF-8; or a regular typeflag with a name
+    ending in `/`, which reads as a directory, and a size that is not
+    zero, where readers disagree on whether data follows.
+
+    Only regular typeflags (NUL, `0`, `7`) are followed by data. POSIX
+    stores no data for links, devices, directories and FIFOs (types 1 to
+    6), whatever their size field says, and GNU tar and Python's tarfile
+    read the next header straight after them, so the size given for
+    those is 0. -/
 def parseBlock (block : ByteArray) : Option Header :=
   if block.size < 512 then none
   else do
-    if sliceList block 257 5 ≠ [117, 115, 116, 97, 114] then none else
+    let magic := sliceList block 257 8
+    let gnuPlain := magic = gnuMagic ∧ (sliceList block 345 155).all (· = 0)
+    if ¬(magic = ustarMagic ∨ gnuPlain) then none else
     let stored ← parseOctal (sliceList block 148 8)
     if stored ≠ blockChecksum (sliceList block 0 512) then none else
     let size ← parseOctal (sliceList block 124 12)
-    let name := bytesToName (sliceList block 0 100)
-    let pfx := bytesToName (sliceList block 345 155)
+    let typeflag := Char.ofNat (byteAt block 156).toNat
+    if !knownTypeflag typeflag then none else
+    let name ← bytesToName (sliceList block 0 100)
+    let pfx ← bytesToName (sliceList block 345 155)
     let fullName := if pfx = "" then name else pfx ++ "/" ++ name
-    some { name := fullName, size := size,
-           typeflag := Char.ofNat (byteAt block 156).toNat }
+    let regular := typeflag == '0' || typeflag == Char.ofNat 0 || typeflag == '7'
+    let dirName := fullName.toList.getLast? == some '/'
+    if regular && dirName && size != 0 then none else
+    some { name := fullName, size := if regular then size else 0, typeflag := typeflag }
 
 /-- Content padded on the right with NUL bytes to width `w`,
     or cut to `w` when longer. -/
@@ -65,7 +99,8 @@ def fieldBytes (content : List UInt8) (w : Nat) : List UInt8 :=
 
 /-- Split a long name at a `/` so the part before it fits the 155-byte
     prefix field and the part after it fits the 100-byte name field.
-    Short names get an empty prefix. Fails when no split works. -/
+    Short names get an empty prefix. Neither part of a split may be
+    empty, so an absolute name keeps its `/`. Fails when no split works. -/
 def splitUstarName (name : String) : Option (String × String) :=
   if name.toUTF8.size ≤ 100 then some ("", name)
   else
@@ -73,7 +108,7 @@ def splitUstarName (name : String) : Option (String × String) :=
     let tries := (List.range cs.length).map fun k =>
       (String.intercalate "/" (cs.take (k + 1)), String.intercalate "/" (cs.drop (k + 1)))
     tries.find? (fun p =>
-      p.1.toUTF8.size ≤ 155 ∧ p.2.toUTF8.size ≤ 100 ∧ p.2 ≠ "")
+      p.1 ≠ "" ∧ p.1.toUTF8.size ≤ 155 ∧ p.2.toUTF8.size ≤ 100 ∧ p.2 ≠ "")
 
 /-- Build a 512-byte header block for a regular file or directory.
     Mode is fixed at 0644, uid, gid, and mtime at 0.

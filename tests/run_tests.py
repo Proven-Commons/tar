@@ -10,12 +10,24 @@ below. Run from anywhere:
 It builds the Lean project first, so it never checks stale code, runs
 all cases in a temporary directory, writes `tests/TEST-RESULTS.md`, and
 exits non-zero if any case fails.
+
+With `--tool REV`, the checks on the tool run against the tool built
+from commit REV, in a temporary directory, instead of this checkout's.
+The checkout is not changed or built. The axiom check reads this
+checkout's proofs, not the tool, so it is left out. The record goes to
+`tests/TEST-RESULTS-REV.md`, with REV as a short hash, and
+`tests/TEST-RESULTS.md` is left as it is. This shows which of these
+checks an earlier tool fails:
+
+    python3 tests/run_tests.py --tool 1273382
 """
 
+import argparse
 import io
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -98,6 +110,209 @@ def is_regular(ti):
     return ti.isreg()
 
 
+# Typeflags of regular files: `0`, NUL, and `7` (contiguous file).
+REGULAR_CODES = (ord("0"), 0, ord("7"))
+
+
+def is_regular_entry(name, tcode):
+    """A regular file: typeflag `0`, NUL or `7`, and a name that does not
+    end in `/`, which older archives use for a directory."""
+    return tcode in REGULAR_CODES and not name.endswith("/")
+
+
+def one_file(fmt, name, data=b"x", typ=tarfile.REGTYPE, pax=None):
+    """An archive of one entry, written by Python's tarfile."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=fmt) as t:
+        ti = tarfile.TarInfo(name)
+        ti.size = len(data)
+        ti.type = typ
+        ti.mtime = 0
+        if pax:
+            ti.pax_headers = pax
+        t.addfile(ti, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def patch_header(raw, offset, new_bytes):
+    """Overwrite bytes in the first header and fix its checksum."""
+    hdr = bytearray(raw[:512])
+    hdr[offset:offset + len(new_bytes)] = new_bytes
+    hdr[148:156] = b" " * 8
+    hdr[148:156] = ("%06o\0 " % sum(hdr)).encode()
+    return bytes(hdr) + raw[512:]
+
+
+LONG = "d/" + "n" * 120 + ".txt"
+SPLIT = "p" * 30 + "/" + "q" * 90 + "/file.txt"
+
+
+def unsupported_archives(work):
+    """Archives that use what the pilot does not read. Each must fail to
+    parse: these are the probes of findings F2, F3 and F7 of the bar
+    audit, and more of the same kinds."""
+    yield "GNU long name entry (typeflag L)", one_file(tarfile.GNU_FORMAT, LONG)
+    yield "GNU long link entry (typeflag K)", patch_header(
+        one_file(tarfile.GNU_FORMAT, "l.txt"), 156, b"K")
+    yield "pax long path (typeflag x)", one_file(tarfile.PAX_FORMAT, LONG)
+    yield "pax path override", one_file(tarfile.PAX_FORMAT, "safe.txt",
+                                        pax={"path": "other/dir/real.txt"})
+    yield "pax path override that climbs out", one_file(
+        tarfile.PAX_FORMAT, "safe.txt", pax={"path": "../../etc/cron.d/x"})
+    yield "pax non-ASCII name", one_file(tarfile.PAX_FORMAT, "café/notes.txt")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT,
+                      pax_headers={"comment": "global"}) as t:
+        ti = tarfile.TarInfo("g.txt")
+        ti.size = 1
+        t.addfile(ti, io.BytesIO(b"g"))
+    yield "pax global header (typeflag g)", buf.getvalue()
+    split = one_file(tarfile.USTAR_FORMAT, SPLIT)
+    yield "split name, invalid UTF-8 in the prefix field only", patch_header(split, 345, b"\xff")
+    yield "split name, invalid UTF-8 in the name field only", patch_header(split, 0, b"\xff")
+    yield "split name, invalid UTF-8 in both fields", patch_header(
+        patch_header(split, 0, b"\xff"), 345, b"\xff")
+    yield "short name, invalid UTF-8", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "short.txt"), 0, b"\xff")
+    gnu = one_file(tarfile.GNU_FORMAT, "a.txt")
+    yield "GNU header with access and change times (incremental dump)", patch_header(
+        gnu, 345, b"15267276047\x0015267276047\x00")
+    yield "GNU header with a sparse map", patch_header(gnu, 386, b"00000000001")
+    for code in b"DMNSVAZ":
+        yield f"unknown typeflag {chr(code)}", patch_header(
+            one_file(tarfile.USTAR_FORMAT, "u.txt"), 156, bytes([code]))
+    yield "base-256 size field", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "b.txt"), 124, b"\x80" + b"\x00" * 10 + b"\x01")
+    yield "ustar magic with a GNU version", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "m.txt"), 263, b" \x00")
+    yield "no magic (old Unix V7 header)", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "v.txt"), 257, b"\x00" * 8)
+    for name, typ in [("d/", tarfile.AREGTYPE), ("e/", tarfile.REGTYPE)]:
+        yield f"name ending in / with typeflag {typ!r} and data", one_file(
+            tarfile.USTAR_FORMAT, name, data=b"x", typ=typ)
+    yield "size field of spaces", patch_header(
+        one_file(tarfile.USTAR_FORMAT, "f", data=b""), 124, b" " * 12)
+    gnu_tar = shutil.which("tar")
+    if gnu_tar:
+        src = work / "systar-long" / "d"
+        src.mkdir(parents=True)
+        (src / ("n" * 120 + ".txt")).write_bytes(b"x")
+        out = work / "systar-long.tar"
+        subprocess.run([gnu_tar, "cf", str(out), "d"], cwd=work / "systar-long", check=True)
+        yield "system tar, default format, long name", out.read_bytes()
+    if gnu_tar and is_gnu_tar(gnu_tar):
+        # GNU tar's own output for the GNU fields in bytes 345 to 499.
+        src = work / "systar-gnu-fields"
+        src.mkdir()
+        (src / "a.txt").write_bytes(b"hi\n")
+        with open(src / "sparse", "wb") as f:
+            f.seek(1 << 20)
+            f.write(b"end")
+        out = work / "systar-incremental.tar"
+        subprocess.run([gnu_tar, "cf", str(out), "--format=gnu",
+                        f"--listed-incremental={work / 'systar.snar'}", "a.txt"],
+                       cwd=src, check=True)
+        yield "system tar, incremental dump (times in bytes 345 to 368)", out.read_bytes()
+        out = work / "systar-sparse.tar"
+        subprocess.run([gnu_tar, "cf", str(out), "--format=gnu", "--sparse", "sparse"],
+                       cwd=src, check=True)
+        yield "system tar, sparse file (typeflag S, map in bytes 386 to 494)", out.read_bytes()
+
+
+def readable_archives(work):
+    """Archives in formats the pilot reads. Each must read as Python's
+    tarfile reads it."""
+    yield "contiguous file (typeflag 7)", one_file(
+        tarfile.USTAR_FORMAT, "contig.bin", data=b"contiguous", typ=tarfile.CONTTYPE)
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.GNU_FORMAT) as t:
+        for name, data in [("gnu.txt", b"gnu"), ("dir/inner.bin", bytes(range(40)))]:
+            ti = tarfile.TarInfo(name)
+            ti.size = len(data)
+            ti.mtime = 0
+            t.addfile(ti, io.BytesIO(data))
+    yield "GNU format, short names", buf.getvalue()
+    yield "pax format, short ASCII name (no pax header)", one_file(
+        tarfile.PAX_FORMAT, "plain.txt", data=b"plain")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        for name, typ, data in [("olddir/", tarfile.AREGTYPE, b""),
+                                ("olddir/f.txt", tarfile.AREGTYPE, b"old"),
+                                ("slashdir/", tarfile.REGTYPE, b"")]:
+            ti = tarfile.TarInfo(name)
+            ti.type = typ
+            ti.size = len(data)
+            ti.mtime = 0
+            t.addfile(ti, io.BytesIO(data))
+    yield "names ending in / with typeflags NUL and 0, read as directories", buf.getvalue()
+    for typ in [tarfile.LNKTYPE, tarfile.SYMTYPE, tarfile.CHRTYPE, tarfile.BLKTYPE,
+                tarfile.DIRTYPE, tarfile.FIFOTYPE]:
+        yield f"typeflag {typ.decode()} with a size field, then two files", hidden_after(typ)
+    gnu_tar = shutil.which("tar")
+    if gnu_tar:
+        # Every kind of entry GNU tar writes for short names in its own
+        # formats: GNU keeps nothing in bytes 345 to 499 for these unless
+        # it is asked for an incremental dump, a sparse file or a
+        # multi-volume archive.
+        src = work / "systar-short"
+        (src / "d").mkdir(parents=True)
+        (src / "a.txt").write_bytes(b"hi\n")
+        (src / "empty").write_bytes(b"")
+        (src / "d" / "b.txt").write_bytes(b"x\n")
+        os.link(src / "a.txt", src / "hard.txt")
+        os.symlink("a.txt", src / "sym")
+        os.mkfifo(src / "fifo")
+        names = ["a.txt", "empty", "d", "hard.txt", "sym", "fifo"]
+        for fmt in ["default"] + (["gnu", "oldgnu"] if is_gnu_tar(gnu_tar) else []):
+            out = work / f"systar-short-{fmt}.tar"
+            opts = [] if fmt == "default" else [f"--format={fmt}"]
+            subprocess.run([gnu_tar, "cf", str(out), *opts, *names], cwd=src, check=True)
+            yield (f"system tar, {fmt} format, short names: files, a directory, "
+                   "a hard link, a symlink, a FIFO"), out.read_bytes()
+
+
+def is_gnu_tar(tar):
+    r = subprocess.run([tar, "--version"], capture_output=True, text=True)
+    return r.stdout.startswith("tar (GNU tar)")
+
+
+def tar_version():
+    tar = shutil.which("tar")
+    if not tar:
+        return "none"
+    r = subprocess.run([tar, "--version"], capture_output=True, text=True)
+    return (r.stdout.splitlines() or ["unknown"])[0]
+
+
+def hidden_after(typ):
+    """An entry of type `typ` whose size field says 1024, then a header and
+    data that fill those 1024 bytes, then one more file. Types 1 to 6
+    store no data, so a reader must see all three entries."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.USTAR_FORMAT) as t:
+        for name, kind, data in [("node", typ, b""), ("hidden.txt", tarfile.REGTYPE, b"hidden"),
+                                 ("b.txt", tarfile.REGTYPE, b"b")]:
+            ti = tarfile.TarInfo(name)
+            ti.type = kind
+            ti.size = len(data)
+            ti.mtime = 0
+            if kind in (tarfile.SYMTYPE, tarfile.LNKTYPE):
+                ti.linkname = "target"
+            t.addfile(ti, io.BytesIO(data))
+    return patch_header(buf.getvalue(), 124, b"00000002000\0")
+
+
+def tarfile_view(path):
+    """(name, data, typeflag code) for each entry, as tarfile reads it."""
+    out = []
+    with tarfile.open(path) as tf:
+        for m in tf.getmembers():
+            data = tf.extractfile(m).read() if m.isreg() else b""
+            tcode = m.type[0] if isinstance(m.type, bytes) else ord(m.type)
+            out.append((m.name, data, tcode))
+    return out
+
+
 def build_archive_a(path):
     """Archive with normal, hostile, and edge-case entries, built with
     Python's tarfile as the reference implementation."""
@@ -157,7 +372,7 @@ def expected_manifest(entries_data, dest="out"):
     entries_data: list of (name, data, typeflag_byte)."""
     lines = []
     for name, data, tcode in entries_data:
-        if tcode not in (ord("0"), 0):
+        if not is_regular_entry(name, tcode):
             lines.append(f"SKIP\t{escape_name(name)}\t{tcode}")
             continue
         rel = spec_gate(name)
@@ -189,16 +404,75 @@ def list_rows(stdout):
     return rows
 
 
-def main():
-    # A run that stops early must not leave an earlier passing record.
-    RESULTS.unlink(missing_ok=True)
-    build = subprocess.run(["lake", "build"], cwd=PILOT_DIR, capture_output=True, text=True)
+def as_tarfile_reads(row):
+    """A `list` row as tarfile reads the entry. tarfile reads typeflag
+    NUL with a name ending in `/` as a directory, typeflag 5 ("Old V7
+    tar format represents a directory as a regular file with a trailing
+    slash", in tarfile.py). Every other row is left as it is."""
+    if len(row) == 3 and row[2] == 0 and row[0].endswith("/"):
+        return (row[0], row[1], 53)
+    return row
+
+
+def skip_as_tarfile_reads(line):
+    """A `manifest` line as tarfile reads the entry: the same rule, for
+    SKIP lines."""
+    p = line.split("\t")
+    if len(p) == 3 and p[0] == "SKIP" and p[2] == "0" and p[1].endswith("/"):
+        return "\t".join([p[0], p[1], "53"])
+    return line
+
+
+def commit_of(rev):
+    """The short hash of commit `rev`."""
+    r = subprocess.run(["git", "rev-parse", "--short=7", "--verify", rev + "^{commit}"],
+                       cwd=PILOT_DIR, capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"not a commit: {rev}")
+    return r.stdout.strip()
+
+
+def tool_at(rev, td):
+    """Build the tool at commit `rev` in `td`. The checkout is not
+    changed."""
+    src = td / "tool-src"
+    src.mkdir()
+    r = subprocess.run(["git", "archive", "--format=tar", rev], cwd=PILOT_DIR,
+                       capture_output=True)
+    if r.returncode != 0:
+        sys.exit(f"git archive {rev} failed: {r.stderr.decode()}")
+    with tarfile.open(fileobj=io.BytesIO(r.stdout)) as tf:
+        tf.extractall(src, filter="data")
+    build = subprocess.run(["lake", "build", "tar-pilot"], cwd=src, capture_output=True,
+                           text=True)
     if build.returncode != 0:
         print(build.stdout + build.stderr)
-        sys.exit("lake build failed")
+        sys.exit(f"lake build failed at {rev}")
+    return src / ".lake" / "build" / "bin" / "tar-pilot"
+
+
+def main():
+    global EXE
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--tool", metavar="REV",
+                    help="check the tool built from commit REV instead of this checkout's, "
+                         "and leave out the axiom check")
+    args = ap.parse_args()
+    rev = commit_of(args.tool) if args.tool else None
+    results = RESULTS if rev is None else PILOT_DIR / "tests" / f"TEST-RESULTS-{rev}.md"
+    # A run that stops early must not leave an earlier passing record.
+    results.unlink(missing_ok=True)
+    if rev is None:
+        build = subprocess.run(["lake", "build"], cwd=PILOT_DIR, capture_output=True,
+                               text=True)
+        if build.returncode != 0:
+            print(build.stdout + build.stderr)
+            sys.exit("lake build failed")
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
+        if rev is not None:
+            EXE = tool_at(rev, td)
         archive_a = td / "a.tar"
         entries = build_archive_a(archive_a)
 
@@ -272,6 +546,13 @@ def main():
                     if m.isreg():
                         got[m.name] = tf.extractfile(m).read()
         check("create-readback", got == files, f"got={list(got)} want={list(files)}")
+        # A name too long for the name field, with no `/` to split it at,
+        # fails with exit code 1 and writes nothing.
+        target = td / "bad.tar"
+        (src / ("n" * 101)).write_bytes(b"x")
+        r = run_lean("create", str(target), "n" * 101, cwd=src)
+        check("create-refuses-long-name", r.returncode == 1 and not target.exists(),
+              f"rc={r.returncode} exists={target.exists()}")
 
         # 4. Lean reads its own archive back with the same manifest.
         if r.returncode == 0:
@@ -300,55 +581,108 @@ def main():
         r = run_lean("list", str(badsum))
         check("bad-checksum-fails", r.returncode == 1, f"rc={r.returncode}")
 
-    # 6. Axiom check: Verify.lean prints the axioms of exactly the
-    # theorems in THEOREMS, and each depends on the three standard axioms
-    # at most. Any other axiom, `sorryAx` included, fails the check.
-    ax = subprocess.run(["lake", "env", "lean", "TarPilot/Verify.lean"],
-                        cwd=PILOT_DIR, capture_output=True, text=True)
-    ax_out = ax.stdout + ax.stderr
-    check("axioms-run", ax.returncode == 0, ax_out[:400])
-    allowed = {"propext", "Classical.choice", "Quot.sound"}
-    records = {}
-    for m in re.finditer(r"'([\w.]+)' depends on axioms: \[(.*?)\]", ax_out, re.DOTALL):
-        records[m.group(1)] = {a.strip() for a in m.group(2).split(",") if a.strip()}
-    for m in re.finditer(r"'([\w.]+)' does not depend on any axioms", ax_out):
-        records[m.group(1)] = set()
-    expected = set(THEOREMS)
-    check("axioms-names", set(records) == expected,
-          f"printed {sorted(records)}, expected {sorted(expected)}")
-    for name, used in sorted(records.items()):
-        check(f"axioms-{name}", used <= allowed, f"axioms: {sorted(used)}")
+        # 6. Formats the pilot does not read fail to parse, with exit
+        # code 1 and nothing on standard output, for both commands.
+        unsupported = 0
+        for i, (label, raw) in enumerate(unsupported_archives(td)):
+            unsupported += 1
+            path = td / f"unsupported{i}.tar"
+            path.write_bytes(raw)
+            for cmd in (["list", str(path)], ["manifest", str(path), "out"]):
+                r = run_lean(*cmd)
+                check(f"unsupported-fails: {label} ({cmd[0]})",
+                      r.returncode == 1 and r.stdout == "",
+                      f"rc={r.returncode} out={r.stdout[:200]!r}")
 
-    axiom_checks = len(records) + 2
+        # 7. Formats the pilot reads give what tarfile reads.
+        readable = 0
+        for i, (label, raw) in enumerate(readable_archives(td)):
+            readable += 1
+            path = td / f"readable{i}.tar"
+            path.write_bytes(raw)
+            ref = tarfile_view(path)
+            # tarfile reports an old-style directory (typeflag NUL, name
+            # ending in `/`) as typeflag 5. The tool's output is read the
+            # same way (`as_tarfile_reads`); no other typeflag changes.
+            r = run_lean("list", str(path))
+            got = norm([as_tarfile_reads(row) for row in list_rows(r.stdout)])
+            want = norm([(escape_name(n), len(d), t) for (n, d, t) in ref])
+            check(f"readable-list: {label}", r.returncode == 0 and got == want,
+                  f"rc={r.returncode} lean={got} expected={want}")
+            r = run_lean("manifest", str(path), "out")
+            got = norm_skip([skip_as_tarfile_reads(l) for l in output_lines(r.stdout)])
+            want = norm_skip(expected_manifest(ref))
+            check(f"readable-manifest: {label}", r.returncode == 0 and got == want,
+                  f"rc={r.returncode} lean={got} expected={want}")
+
+    # 8. Axiom check: Verify.lean prints the axioms of exactly the
+    # theorems in THEOREMS, and each depends on the three standard axioms
+    # at most. Any other axiom, `sorryAx` included, fails the check. It
+    # reads this checkout's proofs, so it is left out with `--tool`.
+    if rev is None:
+        ax = subprocess.run(["lake", "env", "lean", "TarPilot/Verify.lean"],
+                            cwd=PILOT_DIR, capture_output=True, text=True)
+        ax_out = ax.stdout + ax.stderr
+        check("axioms-run", ax.returncode == 0, ax_out[:400])
+        allowed = {"propext", "Classical.choice", "Quot.sound"}
+        records = {}
+        for m in re.finditer(r"'([\w.]+)' depends on axioms: \[(.*?)\]", ax_out, re.DOTALL):
+            records[m.group(1)] = {a.strip() for a in m.group(2).split(",") if a.strip()}
+        for m in re.finditer(r"'([\w.]+)' does not depend on any axioms", ax_out):
+            records[m.group(1)] = set()
+        expected = set(THEOREMS)
+        check("axioms-names", set(records) == expected,
+              f"printed {sorted(records)}, expected {sorted(expected)}")
+        for name, used in sorted(records.items()):
+            check(f"axioms-{name}", used <= allowed, f"axioms: {sorted(used)}")
+        axiom_checks = len(records) + 2
+
     lean_ver = subprocess.run(["lean", "--version"], capture_output=True,
                               text=True).stdout.strip()
 
+    if rev is None:
+        header = [f"Run by `tests/run_tests.py` against Python's `tarfile` module."]
+        count = f"- Checks run: {checks} ({axiom_checks} of them on the axioms of the theorems)"
+    else:
+        header = [
+            f"Run by `tests/run_tests.py --tool {rev}` against Python's `tarfile` module.",
+            f"The tool was built from commit {rev}, not from this checkout. The axiom",
+            "check reads this checkout's proofs, not the tool, so it is left out.",
+        ]
+        count = f"- Checks run: {checks}, all on the tool"
     lines = [
         "# Test results",
         "",
-        f"Run by `tests/run_tests.py` against Python's `tarfile` module.",
-        f"Lean: {lean_ver}. Python: {sys.version.split()[0]}.",
+        *header,
+        f"Lean: {lean_ver}. Python: {sys.version.split()[0]}. System tar: {tar_version()}.",
         "",
-        f"- Checks run: {checks} ({axiom_checks} of them on the axioms of the theorems)",
+        count,
         f"- Failures: {len(failures)}",
         f"- Archive A entries compared (list and manifest): {len(ref_entries)}",
         f"- Manifest outcome on archive A: {ok_count} extracted, "
         f"{rej_count} rejected by the path gate, {skip_count} skipped as non-regular",
         f"- Files written by the Lean `create` command and read back by Python: {len(files)}",
-        "- Broken inputs rejected with exit code 1: truncated archive, "
+        "- Broken inputs that must fail with exit code 1: truncated archive, "
         "random garbage, corrupted checksum",
+        f"- Archives in formats the pilot does not read, which must fail with exit code 1 "
+        f"under `list` and `manifest`: {unsupported}",
+        f"- Archives in other formats it reads, compared with tarfile under `list` and "
+        f"`manifest`: {readable}",
         "",
-        "Axiom check (`TarPilot/Verify.lean`):",
-        "",
-        "```",
-        ax_out.strip(),
-        "```",
+        "How the output is compared with tarfile. tarfile drops the `/` at the end of a",
+        "directory name, so directory names in `list` and names in `SKIP` lines are",
+        "compared without it. tarfile also reads an entry with typeflag NUL and a name",
+        "ending in `/` as a directory, typeflag 5, so for the readable archives the",
+        "tool's typeflag 0 on such an entry is read as 5. Every other typeflag is",
+        "compared as printed.",
         "",
     ]
+    if rev is None:
+        lines += ["Axiom check (`TarPilot/Verify.lean`):", "", "```", ax_out.strip(), "```", ""]
     if failures:
         lines += ["## Failures", ""] + [f"- {f}" for f in failures] + [""]
-    RESULTS.write_text("\n".join(lines))
-    print(f"{checks - len(failures)}/{checks} checks passed; results in {RESULTS}")
+    results.write_text("\n".join(lines))
+    print(f"{checks - len(failures)}/{checks} checks passed; results in {results}")
     return 1 if failures else 0
 
 

@@ -318,7 +318,7 @@ theorem gate_plain (name : String) (rel : List String) :
     is rejected; anything else is skipped. -/
 theorem manifest_eq (dest : List String) (entries : List RawEntry) :
     manifest dest entries = entries.map fun e =>
-      if regularType e.typeflag then
+      if regularType e.typeflag e.name then
         match cleanName e.name with
         | some rel => .extract (dest ++ rel) e.data
         | none => .reject e.name
@@ -514,7 +514,7 @@ theorem manifest_lines_eq (dest : String) (entries : List RawEntry) :
   funext e
   simp only [Function.comp_apply]
   unfold outcome Spec.line
-  have hreg : isRegular e = regularType e.typeflag := rfl
+  have hreg : isRegular e = regularType e.typeflag e.name := rfl
   rw [hreg, gate_eq]
   split
   · split
