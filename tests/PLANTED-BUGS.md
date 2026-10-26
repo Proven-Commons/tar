@@ -122,7 +122,7 @@ proofs or to the axiom check, made in a copy. `lake build` ran on the copy, then
 
 ## Not here
 
-The PR also says that each mutation the two review rounds built now breaks a
-statement. Those mutations change the code, and the reviewers changed its
-proofs with it to show a statement was too weak. They are not faults the
-tests are meant to catch, so they are not planted here.
+The review rounds the PR describes also built changes to the code under proof.
+A change that alters an answer a statement fixes stops `lake build`, so it is
+for the proofs to catch, not for these checks. Those changes were not kept in
+the repo, so they are not planted here, and this record says nothing about them.
