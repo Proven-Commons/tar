@@ -60,6 +60,8 @@ python3 tests/run_tests.py
 
 The build fails if a proof breaks, though it accepts a `sorry` with only a warning. The second command prints the axioms each theorem depends on. The test script builds the project first, fails if any theorem depends on an axiom other than the three standard ones, reruns every comparison, and rewrites `tests/TEST-RESULTS.md`.
 
+`python3 tests/compare_old.py` builds the tool as it was before the containment change (commit 7517a86) and compares the two on 3,000 random archives under five destinations, from a recorded seed. Once the new escapes in names are undone, the output must be the same. It writes `tests/COMPARE-OLD.md`.
+
 ## Layout
 
 - `TarPilot/Path.lean`: the path gate.
@@ -71,3 +73,4 @@ The build fails if a proof breaks, though it accepts a `sorry` with only a warni
 - `TarPilot/Verify.lean`: the axiom check.
 - `Main.lean`: the command line front end.
 - `tests/run_tests.py`: differential tests against Python's `tarfile`.
+- `tests/compare_old.py`: the old tool and the new one compared on random archives.
