@@ -189,6 +189,23 @@ def unsupported_archives(work):
         out = work / "systar-long.tar"
         subprocess.run([gnu_tar, "cf", str(out), "d"], cwd=work / "systar-long", check=True)
         yield "system tar, default format, long name", out.read_bytes()
+    if gnu_tar and is_gnu_tar(gnu_tar):
+        # GNU tar's own output for the GNU fields in bytes 345 to 499.
+        src = work / "systar-gnu-fields"
+        src.mkdir()
+        (src / "a.txt").write_bytes(b"hi\n")
+        with open(src / "sparse", "wb") as f:
+            f.seek(1 << 20)
+            f.write(b"end")
+        out = work / "systar-incremental.tar"
+        subprocess.run([gnu_tar, "cf", str(out), "--format=gnu",
+                        f"--listed-incremental={work / 'systar.snar'}", "a.txt"],
+                       cwd=src, check=True)
+        yield "system tar, incremental dump (times in bytes 345 to 368)", out.read_bytes()
+        out = work / "systar-sparse.tar"
+        subprocess.run([gnu_tar, "cf", str(out), "--format=gnu", "--sparse", "sparse"],
+                       cwd=src, check=True)
+        yield "system tar, sparse file (typeflag S, map in bytes 386 to 494)", out.read_bytes()
 
 
 def readable_archives(work):
@@ -222,13 +239,38 @@ def readable_archives(work):
         yield f"typeflag {typ.decode()} with a size field, then two files", hidden_after(typ)
     gnu_tar = shutil.which("tar")
     if gnu_tar:
+        # Every kind of entry GNU tar writes for short names in its own
+        # formats: GNU keeps nothing in bytes 345 to 499 for these unless
+        # it is asked for an incremental dump, a sparse file or a
+        # multi-volume archive.
         src = work / "systar-short"
         (src / "d").mkdir(parents=True)
         (src / "a.txt").write_bytes(b"hi\n")
+        (src / "empty").write_bytes(b"")
         (src / "d" / "b.txt").write_bytes(b"x\n")
-        out = work / "systar-short.tar"
-        subprocess.run([gnu_tar, "cf", str(out), "a.txt", "d"], cwd=src, check=True)
-        yield "system tar, default format, short names", out.read_bytes()
+        os.link(src / "a.txt", src / "hard.txt")
+        os.symlink("a.txt", src / "sym")
+        os.mkfifo(src / "fifo")
+        names = ["a.txt", "empty", "d", "hard.txt", "sym", "fifo"]
+        for fmt in ["default"] + (["gnu", "oldgnu"] if is_gnu_tar(gnu_tar) else []):
+            out = work / f"systar-short-{fmt}.tar"
+            opts = [] if fmt == "default" else [f"--format={fmt}"]
+            subprocess.run([gnu_tar, "cf", str(out), *opts, *names], cwd=src, check=True)
+            yield (f"system tar, {fmt} format, short names: files, a directory, "
+                   "a hard link, a symlink, a FIFO"), out.read_bytes()
+
+
+def is_gnu_tar(tar):
+    r = subprocess.run([tar, "--version"], capture_output=True, text=True)
+    return r.stdout.startswith("tar (GNU tar)")
+
+
+def tar_version():
+    tar = shutil.which("tar")
+    if not tar:
+        return "none"
+    r = subprocess.run([tar, "--version"], capture_output=True, text=True)
+    return (r.stdout.splitlines() or ["unknown"])[0]
 
 
 def hidden_after(typ):
@@ -349,6 +391,25 @@ def list_rows(stdout):
         except ValueError:
             rows.append((line,))
     return rows
+
+
+def as_tarfile_reads(row):
+    """A `list` row as tarfile reads the entry. tarfile reads typeflag
+    NUL with a name ending in `/` as a directory, typeflag 5 ("Old V7
+    tar format represents a directory as a regular file with a trailing
+    slash", in tarfile.py). Every other row is left as it is."""
+    if len(row) == 3 and row[2] == 0 and row[0].endswith("/"):
+        return (row[0], row[1], 53)
+    return row
+
+
+def skip_as_tarfile_reads(line):
+    """A `manifest` line as tarfile reads the entry: the same rule, for
+    SKIP lines."""
+    p = line.split("\t")
+    if len(p) == 3 and p[0] == "SKIP" and p[2] == "0" and p[1].endswith("/"):
+        return "\t".join([p[0], p[1], "53"])
+    return line
 
 
 def main():
@@ -489,14 +550,17 @@ def main():
             path = td / f"readable{i}.tar"
             path.write_bytes(raw)
             ref = tarfile_view(path)
-            r = run_lean("manifest", str(path), "out")
             # tarfile reports an old-style directory (typeflag NUL, name
-            # ending in `/`) as typeflag 5, so SKIP lines are compared
-            # without their typeflag here.
-            drop_code = lambda ls: [l.rsplit("\t", 1)[0] if l.startswith("SKIP") else l
-                                    for l in norm_skip(ls)]
-            got = drop_code(output_lines(r.stdout))
-            want = drop_code(expected_manifest(ref))
+            # ending in `/`) as typeflag 5. The tool's output is read the
+            # same way (`as_tarfile_reads`); no other typeflag changes.
+            r = run_lean("list", str(path))
+            got = norm([as_tarfile_reads(row) for row in list_rows(r.stdout)])
+            want = norm([(escape_name(n), len(d), t) for (n, d, t) in ref])
+            check(f"readable-list: {label}", r.returncode == 0 and got == want,
+                  f"rc={r.returncode} lean={got} expected={want}")
+            r = run_lean("manifest", str(path), "out")
+            got = norm_skip([skip_as_tarfile_reads(l) for l in output_lines(r.stdout)])
+            want = norm_skip(expected_manifest(ref))
             check(f"readable-manifest: {label}", r.returncode == 0 and got == want,
                   f"rc={r.returncode} lean={got} expected={want}")
 
@@ -527,7 +591,7 @@ def main():
         "# Test results",
         "",
         f"Run by `tests/run_tests.py` against Python's `tarfile` module.",
-        f"Lean: {lean_ver}. Python: {sys.version.split()[0]}.",
+        f"Lean: {lean_ver}. Python: {sys.version.split()[0]}. System tar: {tar_version()}.",
         "",
         f"- Checks run: {checks} ({axiom_checks} of them on the axioms of the theorems)",
         f"- Failures: {len(failures)}",
@@ -539,7 +603,15 @@ def main():
         "random garbage, corrupted checksum",
         f"- Archives in formats the pilot does not read, rejected with exit code 1 "
         f"by `list` and `manifest`: {unsupported}",
-        f"- Archives in other formats it reads, compared with tarfile: {readable}",
+        f"- Archives in other formats it reads, compared with tarfile under `list` and "
+        f"`manifest`: {readable}",
+        "",
+        "How the output is compared with tarfile. tarfile drops the `/` at the end of a",
+        "directory name, so directory names in `list` and names in `SKIP` lines are",
+        "compared without it. tarfile also reads an entry with typeflag NUL and a name",
+        "ending in `/` as a directory, typeflag 5, so for the readable archives the",
+        "tool's typeflag 0 on such an entry is read as 5. Every other typeflag is",
+        "compared as printed.",
         "",
         "Axiom check (`TarPilot/Verify.lean`):",
         "",
