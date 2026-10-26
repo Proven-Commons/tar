@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Plant each fault below in a copy of the project, and record what catches it.
 
-The faults are the four the PR for audit F1 and F5 names, planted
-against the proof check this branch uses, `lake comparator --paranoid`:
-a `sorry` and an axiom behind a helper lemma, an extra theorem, and a
-theorem left out of the list the comparator checks, `comparator.json`.
-Two more are a `sorry` and an axiom in `Spec.escape_noSpecial`, which
-`comparator.json` does not list: the proof of `TarPilot.manifest_lines`
-uses it, so the comparator checks it with that theorem.
+The faults are a `sorry` and an axiom behind a helper lemma, an extra
+theorem, and a statement of `Spec.lean` left out of `comparator.json`,
+the list of theorems the comparator checks. The version of this script
+in the PR for audit F1 and F5 plants the same kinds of fault against
+`TarPilot/Verify.lean`. Here they are planted against the proof check
+this branch uses, `lake comparator --paranoid`. Two more are a `sorry`
+and an axiom in `Spec.escape_noSpecial`, which `comparator.json` does
+not list: the proof of `TarPilot.manifest_lines` uses it, so the
+comparator checks it with that theorem.
 
 What the proofs catch: a change to the code under proof that alters an
 answer a statement fixes stops `lake build`, since the proof of that
