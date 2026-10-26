@@ -3,7 +3,7 @@
 Run by `tests/run_tests.py` against Python's `tarfile` module.
 Lean: Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release). Python: 3.13.17.
 
-- Checks run: 100 (13 of them on the axioms of the theorems)
+- Checks run: 102 (14 of them on the axioms of the theorems)
 - Failures: 0
 - Archive A entries compared (list and manifest): 23
 - Manifest outcome on archive A: 10 extracted, 9 rejected by the path gate, 4 skipped as non-regular
@@ -26,4 +26,5 @@ Axiom check (`TarPilot/Verify.lean`):
 'TarPilot.extractAll_resolves_inside' depends on axioms: [propext, Classical.choice, Quot.sound]
 'TarPilot.extractArchive_eq' depends on axioms: [propext, Classical.choice, Quot.sound]
 'TarPilot.extractArchive_resolves_inside' depends on axioms: [propext, Classical.choice, Quot.sound]
+'Spec.escape_noSpecial' depends on axioms: [propext, Classical.choice, Quot.sound]
 ```

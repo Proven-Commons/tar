@@ -18,3 +18,4 @@ import Proofs
 #print axioms TarPilot.extractAll_resolves_inside
 #print axioms TarPilot.extractArchive_eq
 #print axioms TarPilot.extractArchive_resolves_inside
+#print axioms Spec.escape_noSpecial

@@ -15,7 +15,7 @@ lake build
 .lake/build/bin/tar-pilot create <out.tar> <file> [more files...]
 ```
 
-`manifest` prints what extraction would do, in archive order, and writes nothing to disk: `OK` with the final path, size, and byte sum for an extracted file, `REJECT` for a regular file whose name fails the path gate, `SKIP` for a non-regular entry. Fields are separated by tabs and lines end in a line feed. In `REJECT` and `SKIP` lines, and in `list`, a backslash in a name is printed as two, the line and paragraph separators U+2028 and U+2029 as `\u2028` and `\u2029`, and a control character as `\x` and two hex digits. A destination that holds any of these special characters, or U+FFFD (which the Lean runtime puts in place of bytes that are not UTF-8), is refused (exit code 2).
+`manifest` prints what extraction would do, in archive order, and writes nothing to disk: `OK` with the final path, size, and byte sum for an extracted file, `REJECT` for a regular file whose name fails the path gate, `SKIP` for a non-regular entry. Fields are separated by tabs and lines end in a line feed. In `REJECT` and `SKIP` lines, and in `list`, a backslash in a name is printed as two, the line and paragraph separators U+2028 and U+2029 as `\u2028` and `\u2029`, and a control character as `\x` and two hex digits. A destination that holds any of these special characters, or U+FFFD (which the Lean runtime puts in place of bytes that are not UTF-8), is refused (exit code 2). A U+FFFD typed as such is refused too: by the time the tool reads its arguments, it cannot tell one from the other.
 
 ## What is proved
 
@@ -43,7 +43,7 @@ Axiom check: each theorem depends only on the standard Lean axioms (`propext`, `
 
 Read this before trusting the pilot with real archives:
 
-- Header parsing, octal fields, checksums, and archive writing are tested, not proved. The tests compare the Lean code against Python's `tarfile` module and against an independent copy of the extraction spec. Results are in `tests/TEST-RESULTS.md`: 100 checks, 13 of them on the axioms, 0 failures. They cover 23 archive entries with normal files, hostile names (control characters and line separators among them), and a long name split over the ustar prefix field; eight destinations, and five refused for a special character or U+FFFD; broken inputs (truncated, garbage, bad checksum); 27 archives in formats the pilot does not read; and 11 more archives it does read, among them GNU format, GNU tar's own output, names ending in `/`, and links, devices, directories and FIFOs whose size fields are not zero.
+- Header parsing, octal fields, checksums, and archive writing are tested, not proved. The tests compare the Lean code against Python's `tarfile` module and against an independent copy of the extraction spec. Results are in `tests/TEST-RESULTS.md`: 102 checks, 14 of them on the axioms, 0 failures. They cover 23 archive entries with normal files, hostile names (control characters and line separators among them), and a long name split over the ustar prefix field; eight destinations, and six refused: five for a special character or U+FFFD, and one given as bytes that are not UTF-8; broken inputs (truncated, garbage, bad checksum); 27 archives in formats the pilot does not read; and 11 more archives it does read, among them GNU format, GNU tar's own output, names ending in `/`, and links, devices, directories and FIFOs whose size fields are not zero.
 - The `list` output is tested, not proved. So is `Main.lean`: that it prints `o.line` for each outcome of the manifest, and refuses a destination with a special character or U+FFFD. Read it with the statements; it is a few lines.
 - Extraction works on an in-memory model. Nothing here writes files to disk, so the step from a proved in-memory path to a safe write on a real filesystem (races, symlinks already on disk, symlinked destination folders) is outside this project for now. The proof resolves paths lexically, as POSIX does when no component is a symlink.
 - The destination itself. The proof says where a path lands relative to the destination, not whether the destination is a safe place to write. The destination is the command-line argument as the Lean runtime decodes it from UTF-8.
@@ -66,6 +66,10 @@ python3 tests/run_tests.py
 
 The build fails if a proof breaks, though it accepts a `sorry` with only a warning. The second command prints the axioms each theorem depends on. The test script builds the project first, fails if any theorem depends on an axiom other than the three standard ones, reruns every comparison, and rewrites `tests/TEST-RESULTS.md`.
 
+`python3 tests/compare_old.py` builds the tool as it was before the containment change (commit 7517a86) and compares the two on 3,000 random archives under five destinations, from a recorded seed. Once the new escapes in names are undone, the output must be the same. It writes `tests/COMPARE-OLD.md`.
+
+`python3 tests/planted_bugs.py` plants, one at a time in a copy, a `sorry`, an axiom, an extra theorem that is not on the list, and a listed theorem left out of `TarPilot/Verify.lean`. It records that `lake build` passes on each and that the test script fails. It writes `tests/PLANTED-BUGS.md`.
+
 ## Layout
 
 - `TarPilot/Path.lean`: the path gate.
@@ -77,3 +81,5 @@ The build fails if a proof breaks, though it accepts a `sorry` with only a warni
 - `TarPilot/Verify.lean`: the axiom check.
 - `Main.lean`: the command line front end.
 - `tests/run_tests.py`: differential tests against Python's `tarfile`.
+- `tests/compare_old.py`: the old tool and the new one compared on random archives.
+- `tests/planted_bugs.py`: faults planted in the proofs, which the axiom check must catch.

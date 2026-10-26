@@ -27,10 +27,11 @@ PILOT_DIR = Path(__file__).resolve().parent.parent
 EXE = PILOT_DIR / ".lake" / "build" / "bin" / "tar-pilot"
 RESULTS = PILOT_DIR / "tests" / "TEST-RESULTS.md"
 # The theorems `TarPilot/Verify.lean` prints the axioms of.
-THEOREMS = ["gate_eq", "gate_plain", "manifest_eq", "manifest_extracted", "manifest_lines",
-            "manifest_lines_eq", "extractAll_contained",
-            "extractAll_joined", "extractAll_resolves_inside", "extractArchive_eq",
-            "extractArchive_resolves_inside"]
+THEOREMS = ["TarPilot." + t for t in [
+    "gate_eq", "gate_plain", "manifest_eq", "manifest_extracted", "manifest_lines",
+    "manifest_lines_eq", "extractAll_contained",
+    "extractAll_joined", "extractAll_resolves_inside", "extractArchive_eq",
+    "extractArchive_resolves_inside"]] + ["Spec.escape_noSpecial"]
 
 checks = 0
 failures = []
@@ -404,7 +405,9 @@ def main():
                   r.returncode == 0 and
                   norm_skip(output_lines(r.stdout)) == norm_skip(expected_manifest(ref_entries, dest)),
                   f"rc={r.returncode} lean={output_lines(r.stdout)[:3]}")
-        for dest in ["out\nOK", "o\tut", "o\x7f", "o\u2028ut", "o\ufffdut"]:
+        # The last is bytes that are not UTF-8, which the Lean runtime
+        # reads as U+FFFD before `main` runs.
+        for dest in ["out\nOK", "o\tut", "o\x7f", "o\u2028ut", "o\ufffdut", b"o\xffut"]:
             r = run_lean("manifest", str(archive_a), dest)
             check(f"manifest-dest-refused {dest!r}", r.returncode == 2 and r.stdout == "",
                   f"rc={r.returncode} out={r.stdout[:100]!r}")
@@ -510,7 +513,7 @@ def main():
         records[m.group(1)] = {a.strip() for a in m.group(2).split(",") if a.strip()}
     for m in re.finditer(r"'([\w.]+)' does not depend on any axioms", ax_out):
         records[m.group(1)] = set()
-    expected = {f"TarPilot.{t}" for t in THEOREMS}
+    expected = set(THEOREMS)
     check("axioms-names", set(records) == expected,
           f"printed {sorted(records)}, expected {sorted(expected)}")
     for name, used in sorted(records.items()):
