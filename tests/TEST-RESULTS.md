@@ -1,20 +1,28 @@
 # Test results
 
 Run by `tests/run_tests.py` against Python's `tarfile` module.
-Lean: Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release). Python: 3.12.3.
+Lean: Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release). Python: 3.13.17.
 
-- Checks run: 16
+- Checks run: 37 (14 of them on the axioms of the theorems)
 - Failures: 0
-- Archive A entries compared (list and manifest): 14
-- Manifest outcome on archive A: 9 extracted, 3 rejected by the path gate, 2 skipped as non-regular
+- Archive A entries compared (list and manifest): 23
+- Manifest outcome on archive A: 10 extracted, 9 rejected by the path gate, 4 skipped as non-regular
 - Files written by the Lean `create` command and read back by Python: 3
 - Broken inputs rejected with exit code 1: truncated archive, random garbage, corrupted checksum
 
 Axiom check (`TarPilot/Verify.lean`):
 
 ```
-'TarPilot.gate_sound' depends on axioms: [propext, Classical.choice, Quot.sound]
-'TarPilot.cleanComponents_sound' depends on axioms: [propext]
-'TarPilot.extractAll_safe' depends on axioms: [propext, Classical.choice, Quot.sound]
-'TarPilot.extractArchive_safe' depends on axioms: [propext, Classical.choice, Quot.sound]
+'TarPilot.gate_eq' depends on axioms: [propext, Classical.choice, Quot.sound]
+'TarPilot.gate_plain' depends on axioms: [propext, Classical.choice, Quot.sound]
+'TarPilot.manifest_eq' depends on axioms: [propext, Classical.choice, Quot.sound]
+'TarPilot.manifest_extracted' depends on axioms: [propext, Classical.choice, Quot.sound]
+'TarPilot.manifest_lines' depends on axioms: [propext, Classical.choice, Quot.sound]
+'TarPilot.manifest_lines_eq' depends on axioms: [propext, Classical.choice, Quot.sound]
+'TarPilot.extractAll_contained' depends on axioms: [propext, Classical.choice, Quot.sound]
+'TarPilot.extractAll_joined' depends on axioms: [propext, Classical.choice, Quot.sound]
+'TarPilot.extractAll_resolves_inside' depends on axioms: [propext, Classical.choice, Quot.sound]
+'TarPilot.extractArchive_eq' depends on axioms: [propext, Classical.choice, Quot.sound]
+'TarPilot.extractArchive_resolves_inside' depends on axioms: [propext, Classical.choice, Quot.sound]
+'Spec.escape_noSpecial' depends on axioms: [propext, Classical.choice, Quot.sound]
 ```
