@@ -38,7 +38,7 @@ The gate's rules: a name that starts with `/` is rejected. A name with a `..` co
 | Resolved lexically, it is the resolved destination followed by those names, for an archive given as entries or as bytes: no `..` in an archive reaches above the destination. The resolution reads a path as relative and drops a leading `/`, so for an absolute destination read both sides from `/`. | `TarPilot.extractAll_resolves_inside`, `TarPilot.extractArchive_resolves_inside` |
 | Extracting an archive read from bytes is parsing it, then the extractor. | `TarPilot.extractArchive_eq` |
 
-`Spec/Defs.lean` also proves, about the specification alone, that a printed name holds no special character, so it cannot break a line or a field (`Spec.escape_noSpecial`).
+`Spec/Defs.lean` also proves, about the specification alone, that a printed name holds no special character, so it cannot break a line or a field (`Spec.escape_noSpecial`). It is not one of the statements in `Spec.lean`, and `comparator.json` does not list it: it says nothing about the code, and the bar check refuses a listed theorem whose statement mentions no code under proof. Its axioms are checked all the same, as axioms of `TarPilot.manifest_lines`, whose proof uses it. So a `sorry` or an axiom in it makes `lake comparator --paranoid` reject the proofs (`tests/PLANTED-BUGS.md`).
 
 ## What is not proved
 
@@ -82,7 +82,7 @@ python3 tests/run_tests.py
 
 `python3 tests/run_tests.py --tool 1273382` runs the same checks against the tool of the containment change (commit 1273382), from before the parser changes, and writes `tests/TEST-RESULTS-1273382.md`: 10,377 of the 23,269 checks fail there. The 3,134 checks of the model against `tarfile` do not run the tool, so they pass.
 
-`python3 tests/planted_bugs.py` plants, one at a time in a copy, a `sorry`, an axiom, an extra theorem that is not on the list, and a listed theorem left out of `TarPilot/Verify.lean`. It records that `lake build` passes on each and that the test script fails. It writes `tests/PLANTED-BUGS.md`.
+`python3 tests/planted_bugs.py --bar <mission>/bar/check.py` plants seven faults, one at a time in a copy: a `sorry` and an axiom behind a helper lemma of the proofs; an extra theorem in `Spec.lean` and `comparator.json` that the page does not claim, proved by `sorry`, and proved; a statement of `Spec.lean` left out of `comparator.json`; and a `sorry` and an axiom in `Spec.escape_noSpecial`. Here `<mission>` is a checkout of Proven-Commons/mission at the commit `.github/workflows/bar.yml` pins. On each copy the script runs `lake build`, `lake comparator --paranoid`, the tests and the bar check, and it writes `tests/PLANTED-BUGS.md`. `lake build` passes on all seven, and the tests report no failures, since they check the tool. The comparator rejects the five with a `sorry` or an axiom. It checks only the theorems `comparator.json` lists, so it accepts the other two. The bar check catches those, in item 2 and in item 3.
 
 ## Layout
 
@@ -100,3 +100,4 @@ python3 tests/run_tests.py
 - `SPEC.md`: the specification in plain words.
 - `tests/run_tests.py`: the differential tests.
 - `tests/compare_old.py`: the tool before the containment change and the tool of that change, compared on random archives.
+- `tests/planted_bugs.py`: faults planted in the proofs and in the list of theorems checked, which the comparator or the bar check must catch.
