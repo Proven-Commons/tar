@@ -1,0 +1,38 @@
+# Read by bar/check.py in Proven-Commons/mission.
+# See playbook/verified-bar.md there for what each field means.
+
+[project]
+name = "tar"
+# "in-progress" until every bar item passes, then "verified".
+status = "in-progress"
+page = "README.md"
+# GitHub handles of everyone who wrote the specification. It was drafted
+# by Claude, an AI agent, for the org.
+spec_authors = ["claude"]
+# The program people run. A change to it voids the approval.
+entry_points = ["Main.lean"]
+
+[spec]
+files = ["SPEC.md", "Spec.lean", "Spec/Defs.lean"]
+# The code under proof: the functions and types the statements are about.
+code = [
+  "TarPilot.gate", "TarPilot.manifest", "TarPilot.extractAll", "TarPilot.extractArchive",
+  "TarPilot.parseArchive",
+  "TarPilot.destComponents", "TarPilot.joinPath",
+  "TarPilot.Outcome", "TarPilot.Outcome.extract", "TarPilot.Outcome.reject",
+  "TarPilot.Outcome.skip", "TarPilot.Outcome.line", "TarPilot.Outcome.extracted",
+  "TarPilot.RawEntry", "TarPilot.RawEntry.name", "TarPilot.RawEntry.typeflag",
+  "TarPilot.RawEntry.data",
+]
+
+# One entry per approval, added in a pull request the reviewer approves.
+# [[spec.approval]]
+# reviewer = "github-handle"
+# date = "2026-11-02"
+# sha256 = "..."
+# record = "https://github.com/Proven-Commons/tar/pull/<n>"
+
+[tests]
+results = "tests/TEST-RESULTS.md"
+command = "python3 tests/run_tests.py"
+files = ["tests/run_tests.py"]
