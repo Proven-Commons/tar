@@ -18,7 +18,13 @@ cases in `tests/run_tests.py` cover those.
 
 Run from anywhere (needs git, and the old commit in the history):
 
-    python3 tests/compare_old.py [--seed N] [--count N]
+    python3 tests/compare_old.py [--seed N] [--count N] [--new REV]
+
+With `--new REV`, the new tool is built from commit REV instead of this
+checkout. The PR's run compared 7517a86 with its own commit, 1273382,
+whose tool is the one in this checkout. A later change to the parser
+changes the output on purpose, so on a later branch pass
+`--new 1273382` to rerun the PR's run.
 
 It builds both tools, writes `tests/COMPARE-OLD.md`, and exits non-zero
 if any run differs.
@@ -53,15 +59,15 @@ def build(where):
     return Path(where) / ".lake" / "build" / "bin" / "tar-pilot"
 
 
-def old_tool(td):
-    """Build the tool at commit OLD in a directory of its own. The
+def tool_at(rev, td):
+    """Build the tool at commit `rev` in a directory of its own. The
     checkout is not changed."""
-    src = Path(td) / "old"
+    src = Path(td) / rev
     src.mkdir()
-    r = subprocess.run(["git", "archive", "--format=tar", OLD], cwd=PILOT_DIR,
+    r = subprocess.run(["git", "archive", "--format=tar", rev], cwd=PILOT_DIR,
                        capture_output=True)
     if r.returncode != 0:
-        sys.exit(f"git archive {OLD} failed: {r.stderr.decode()}")
+        sys.exit(f"git archive {rev} failed: {r.stderr.decode()}")
     with tarfile.open(fileobj=io.BytesIO(r.stdout)) as tf:
         tf.extractall(src, filter="data")
     return build(src)
@@ -123,17 +129,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, default=20261025)
     ap.add_argument("--count", type=int, default=3000, help="random archives")
+    ap.add_argument("--new", help="build the new tool from this commit, not the checkout")
     args = ap.parse_args()
     RESULTS.unlink(missing_ok=True)
 
     rng = random.Random(args.seed)
-    new = build(PILOT_DIR)
     runs = 0
     raw = 0
     diffs = []
     lines = {"OK": 0, "REJECT": 0, "SKIP": 0}
     with tempfile.TemporaryDirectory() as td:
-        old = old_tool(td)
+        old = tool_at(OLD, td)
+        new = tool_at(args.new, td) if args.new else build(PILOT_DIR)
         path = os.path.join(td, "t.tar")
         for _ in range(args.count):
             write_archive(rng, path)
@@ -156,7 +163,8 @@ def main():
         "",
         "Written by `tests/compare_old.py`. Rerun it to check these numbers.",
         "",
-        f"- Old tool: commit {OLD}. New tool: this checkout.",
+        f"- Old tool: commit {OLD}. New tool: "
+        + (f"commit {args.new}." if args.new else "this checkout."),
         f"- Lean: {lean_ver}. Python: {platform.python_version()}.",
         f"- Seed: {args.seed}",
         f"- Random archives: {args.count}, written by Python's `tarfile` in ustar format",
