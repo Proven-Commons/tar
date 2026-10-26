@@ -17,13 +17,13 @@ lake build
 .lake/build/bin/tar-pilot create <out.tar> <file> [more files...]
 ```
 
-`manifest` prints what extraction would do, in archive order: `OK` with the final path, size, and byte sum for an extracted file, `REJECT` for a regular file whose name fails the path gate, `SKIP` for any other entry. Fields are separated by tabs and lines end in a line feed. In `REJECT` and `SKIP` lines, and in `list`, a backslash in a name is printed as two, the line and paragraph separators U+2028 and U+2029 as `\u2028` and `\u2029`, and a control character as `\x` and two hex digits. A destination that holds any of these special characters, or U+FFFD (which the Lean runtime puts in place of bytes that are not UTF-8), is refused (exit code 2). `SPEC.md` gives every rule in plain words.
+`manifest` prints what extraction would do, in archive order: `OK` with the final path, size, and byte sum for an extracted file, `REJECT` for a regular file whose name fails the path gate, `SKIP` for any other entry. Fields are separated by tabs and lines end in a line feed. In `REJECT` and `SKIP` lines, and in `list`, a backslash in a name is printed as two, the line and paragraph separators U+2028 and U+2029 as `\u2028` and `\u2029`, and a control character as `\x` and two hex digits. A destination that holds any of these special characters, or U+FFFD (which the Lean runtime puts in place of bytes that are not UTF-8), is refused (exit code 2). A U+FFFD typed as such is refused too: by the time the tool reads its arguments, it cannot tell one from the other. `SPEC.md` gives every rule in plain words.
 
 ## What is proved
 
 The statements are in `Spec.lean`, the definitions they use in `Spec/Defs.lean`, and the proofs in `Proofs/`. The definitions say what a special character is (a control character, C0, DEL, or C1, or the Unicode line or paragraph separator), what a plain name is, how a path string splits into components, the gate's rules, which entries are regular files, how a path is written under a destination, how a name is printed, the exact line printed for an entry, and how a relative path resolves. The statements are about the code definitions `Spec/Defs.lean` lists, which a reviewer reads with them.
 
-The gate's rules: a name that starts with `/` is rejected. A name with a `..` component, or with a special character, is rejected. Empty and `.` components are dropped. A name with nothing left is rejected. Only regular files are extracted: typeflag `0`, NUL, or `7` (a contiguous file), with a name that does not end in `/`, which older archives use for a directory and GNU tar reads as one. Directories, links, and other entries are skipped, so a link entry cannot place a later entry outside the destination.
+The gate's rules: a name that starts with `/` is rejected. A name with a `..` component, or with a special character, is rejected. Empty and `.` components are dropped. A name with nothing left is rejected. Only regular files are extracted: typeflag `0`, NUL, or `7` (a contiguous file), with a name that does not end in `/`, which older archives use for a directory and GNU tar reads as one. So an entry with a regular typeflag and a name ending in `/` gets a `SKIP` line when its size is zero. When its size is not zero, the whole archive fails to parse, since readers disagree on whether data follows (see the list under What is not proved). Directories, links, and other entries are skipped, so a link entry cannot place a later entry outside the destination.
 
 | Claim | Theorem |
 |-------|---------|
@@ -45,7 +45,7 @@ The gate's rules: a name that starts with `/` is rejected. A name with a `..` co
 - Parsing bytes into entries: the header layout, octal fields, checksums, and which formats are read. So are the `list` output, `create`, and `Main.lean`: that it prints `o.line` for each outcome of the manifest, and refuses a destination with a special character or U+FFFD. `Main.lean` is a few lines; read it with the statements. The differential tests cover these, against Python's `tarfile` and against a model of the format written from `SPEC.md`. The statements hold for whatever entries a parse gives.
 - Formats beyond POSIX ustar. The pilot reads ustar headers, and GNU headers that carry nothing ustar does not. As POSIX says, and as GNU tar and Python's `tarfile` read them, links, devices, directories and FIFOs store no data, whatever their size field says. An archive that uses anything outside the rules in `SPEC.md` fails to parse as a whole, rather than be read in a way the pilot does not vouch for:
   - typeflags outside the POSIX set (NUL and `0` to `7`), among them GNU long names and long links (`L`, `K`), pax headers (`x`, `g`), and GNU sparse, incremental and volume entries. GNU tar writes long names this way by default, and Python's `tarfile` writes pax headers for long or non-ASCII names;
-  - a GNU header with anything where ustar keeps its name prefix, such as the access and change times of an incremental dump;
+  - a GNU header with anything where ustar keeps its name prefix (bytes 345 to 499), such as the access and change times of an incremental dump. GNU tar 1.35 puts nothing there for short names, in its default, `gnu` and `oldgnu` formats, unless it is asked for an incremental dump, a sparse file or a multi-volume archive;
   - a name or prefix field that is not valid UTF-8;
   - a base-256 size field, or a size field of spaces, which GNU tar refuses;
   - a regular typeflag with a name ending in `/`, which reads as a directory, and a size that is not zero, where readers disagree on whether data follows;
@@ -77,6 +77,12 @@ python3 tests/run_tests.py
 ```
 
 `lake comparator --paranoid` builds the statements and the proofs in a sandbox. It checks that each theorem in `Proofs/` proves exactly the statement in `Spec.lean`, using only the axioms `propext`, `Classical.choice`, and `Quot.sound`, and replays it through every kernel shipped with Lean. The test script builds the project, runs the fixed and random cases from a recorded seed, and rewrites `tests/TEST-RESULTS.md`.
+
+`python3 tests/compare_old.py --new 1273382` builds the tool as it was before the containment change (commit 7517a86) and the tool of that change (commit 1273382), and compares the two on 3,000 random archives under five destinations, from a recorded seed. Once the new escapes in names are undone, the output must be the same. It writes `tests/COMPARE-OLD.md`. Without `--new`, it compares this checkout's tool, and runs differ on purpose: some random names end in `/` with a regular typeflag, and this tool skips such an entry, or refuses the archive when the entry has data.
+
+`python3 tests/run_tests.py --tool 1273382` runs the same checks against the tool of the containment change (commit 1273382), from before the parser changes. It leaves out the axiom check, which reads this checkout's proofs, not the tool, and writes `tests/TEST-RESULTS-1273382.md`: 68 of the 107 checks fail there.
+
+`python3 tests/planted_bugs.py` plants, one at a time in a copy, a `sorry`, an axiom, an extra theorem that is not on the list, and a listed theorem left out of `TarPilot/Verify.lean`. It records that `lake build` passes on each and that the test script fails. It writes `tests/PLANTED-BUGS.md`.
 
 ## Layout
 

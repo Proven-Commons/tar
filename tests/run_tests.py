@@ -6,14 +6,17 @@ Compares the tool's `list` and `manifest` commands against Python's
 written below from SPEC.md, independently of the Lean code. Run from
 anywhere:
 
-    python3 tests/run_tests.py [--seed N] [--count N]
+    python3 tests/run_tests.py [--seed N] [--count N] [--tool REV]
 
 It has two parts:
 
 - Fixed cases: an archive of normal, hostile and edge-case entries
-  written with tarfile, eleven destinations, archives written by the
-  tool and read back by tarfile, broken archives, and the formats the
-  pilot does not read (the probes of the 2026-10-24 bar audit).
+  written with tarfile, under eight destinations, and six destinations
+  the tool must refuse; archives written by the tool and read back by
+  tarfile; broken archives; the formats the pilot does not read (the
+  probes of the 2026-10-24 bar audit, and more of the same kinds); and
+  archives in formats it reads, GNU tar's own output among them, each
+  compared with tarfile under `list` and `manifest`.
 - Random cases, from a recorded seed: archives written by tarfile in
   ustar, GNU and pax formats, with hostile names, every POSIX entry
   type, and random data, and the same kind of archives mutated (bytes
@@ -26,6 +29,15 @@ It has two parts:
 It builds the Lean project first, so it never checks stale code, writes
 `tests/TEST-RESULTS.md`, and exits non-zero if any case fails. The
 proofs are checked by `lake comparator --paranoid`, not here.
+
+With `--tool REV`, the checks run against the tool built from commit
+REV, in a temporary directory, instead of this checkout's. The checkout
+is not changed or built. The record goes to
+`tests/TEST-RESULTS-REV.md`, with REV as a short hash, and
+`tests/TEST-RESULTS.md` is left as it is. This shows which of these
+checks an earlier tool fails:
+
+    python3 tests/run_tests.py --tool 1273382
 """
 
 import argparse
@@ -215,6 +227,23 @@ def unsupported_archives(work):
         out = work / "systar-long.tar"
         subprocess.run([gnu_tar, "cf", str(out), "d"], cwd=work / "systar-long", check=True)
         yield "system tar, default format, long name", out.read_bytes()
+    if gnu_tar and is_gnu_tar(gnu_tar):
+        # GNU tar's own output for the GNU fields in bytes 345 to 499.
+        src = work / "systar-gnu-fields"
+        src.mkdir()
+        (src / "a.txt").write_bytes(b"hi\n")
+        with open(src / "sparse", "wb") as f:
+            f.seek(1 << 20)
+            f.write(b"end")
+        out = work / "systar-incremental.tar"
+        subprocess.run([gnu_tar, "cf", str(out), "--format=gnu",
+                        f"--listed-incremental={work / 'systar.snar'}", "a.txt"],
+                       cwd=src, check=True)
+        yield "system tar, incremental dump (times in bytes 345 to 368)", out.read_bytes()
+        out = work / "systar-sparse.tar"
+        subprocess.run([gnu_tar, "cf", str(out), "--format=gnu", "--sparse", "sparse"],
+                       cwd=src, check=True)
+        yield "system tar, sparse file (typeflag S, map in bytes 386 to 494)", out.read_bytes()
 
 
 def readable_archives(work):
@@ -260,13 +289,38 @@ def readable_archives(work):
         one_file(tarfile.USTAR_FORMAT, "a.txt", data=b"pad"), 500, b"padding1234!")
     gnu_tar = shutil.which("tar")
     if gnu_tar:
+        # Every kind of entry GNU tar writes for short names in its own
+        # formats: GNU keeps nothing in bytes 345 to 499 for these unless
+        # it is asked for an incremental dump, a sparse file or a
+        # multi-volume archive.
         src = work / "systar-short"
         (src / "d").mkdir(parents=True)
         (src / "a.txt").write_bytes(b"hi\n")
+        (src / "empty").write_bytes(b"")
         (src / "d" / "b.txt").write_bytes(b"x\n")
-        out = work / "systar-short.tar"
-        subprocess.run([gnu_tar, "cf", str(out), "a.txt", "d"], cwd=src, check=True)
-        yield "system tar, default format, short names", out.read_bytes()
+        os.link(src / "a.txt", src / "hard.txt")
+        os.symlink("a.txt", src / "sym")
+        os.mkfifo(src / "fifo")
+        names = ["a.txt", "empty", "d", "hard.txt", "sym", "fifo"]
+        for fmt in ["default"] + (["gnu", "oldgnu"] if is_gnu_tar(gnu_tar) else []):
+            out = work / f"systar-short-{fmt}.tar"
+            opts = [] if fmt == "default" else [f"--format={fmt}"]
+            subprocess.run([gnu_tar, "cf", str(out), *opts, *names], cwd=src, check=True)
+            yield (f"system tar, {fmt} format, short names: files, a directory, "
+                   "a hard link, a symlink, a FIFO"), out.read_bytes()
+
+
+def is_gnu_tar(tar):
+    r = subprocess.run([tar, "--version"], capture_output=True, text=True)
+    return r.stdout.startswith("tar (GNU tar)")
+
+
+def tar_version():
+    tar = shutil.which("tar")
+    if not tar:
+        return "none"
+    r = subprocess.run([tar, "--version"], capture_output=True, text=True)
+    return (r.stdout.splitlines() or ["unknown"])[0]
 
 
 def hidden_after(typ):
@@ -387,6 +441,53 @@ def list_rows(stdout):
         except ValueError:
             rows.append((line,))
     return rows
+
+
+def as_tarfile_reads(row):
+    """A `list` row as tarfile reads the entry. tarfile reads typeflag
+    NUL with a name ending in `/` as a directory, typeflag 5 ("Old V7
+    tar format represents a directory as a regular file with a trailing
+    slash", in tarfile.py). Every other row is left as it is."""
+    if len(row) == 3 and row[2] == 0 and row[0].endswith("/"):
+        return (row[0], row[1], 53)
+    return row
+
+
+def skip_as_tarfile_reads(line):
+    """A `manifest` line as tarfile reads the entry: the same rule, for
+    SKIP lines."""
+    p = line.split("\t")
+    if len(p) == 3 and p[0] == "SKIP" and p[2] == "0" and p[1].endswith("/"):
+        return "\t".join([p[0], p[1], "53"])
+    return line
+
+
+def commit_of(rev):
+    """The short hash of commit `rev`."""
+    r = subprocess.run(["git", "rev-parse", "--short=7", "--verify", rev + "^{commit}"],
+                       cwd=PILOT_DIR, capture_output=True, text=True)
+    if r.returncode != 0:
+        sys.exit(f"not a commit: {rev}")
+    return r.stdout.strip()
+
+
+def tool_at(rev, td):
+    """Build the tool at commit `rev` in `td`. The checkout is not
+    changed."""
+    src = td / "tool-src"
+    src.mkdir()
+    r = subprocess.run(["git", "archive", "--format=tar", rev], cwd=PILOT_DIR,
+                       capture_output=True)
+    if r.returncode != 0:
+        sys.exit(f"git archive {rev} failed: {r.stderr.decode()}")
+    with tarfile.open(fileobj=io.BytesIO(r.stdout)) as tf:
+        tf.extractall(src, filter="data")
+    build = subprocess.run(["lake", "build", "tar-pilot"], cwd=src, capture_output=True,
+                           text=True)
+    if build.returncode != 0:
+        print(build.stdout + build.stderr)
+        sys.exit(f"lake build failed at {rev}")
+    return src / ".lake" / "build" / "bin" / "tar-pilot"
 
 
 # ---- A model of the format, from SPEC.md --------------------------------
@@ -683,22 +784,31 @@ def random_cases(seed, count, work):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    global EXE
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--seed", type=int, default=20261025)
     ap.add_argument("--count", type=int, default=10000,
                     help="random archives, half of them mutated")
+    ap.add_argument("--tool", metavar="REV",
+                    help="check the tool built from commit REV instead of this checkout's")
     args = ap.parse_args()
     if shutil.which("tar") is None:
         sys.exit("needs GNU tar on PATH: some fixed cases are archives it writes")
+    rev = commit_of(args.tool) if args.tool else None
+    results = RESULTS if rev is None else PILOT_DIR / "tests" / f"TEST-RESULTS-{rev}.md"
     # A run that stops early must not leave an earlier passing record.
-    RESULTS.unlink(missing_ok=True)
-    build = subprocess.run(["lake", "build"], cwd=PILOT_DIR, capture_output=True, text=True)
-    if build.returncode != 0:
-        print(build.stdout + build.stderr)
-        sys.exit("lake build failed")
+    results.unlink(missing_ok=True)
+    if rev is None:
+        build = subprocess.run(["lake", "build"], cwd=PILOT_DIR, capture_output=True,
+                               text=True)
+        if build.returncode != 0:
+            print(build.stdout + build.stderr)
+            sys.exit("lake build failed")
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
+        if rev is not None:
+            EXE = tool_at(rev, td)
         archive_a = td / "a.tar"
         entries = build_archive_a(archive_a)
 
@@ -743,7 +853,9 @@ def main():
                   r.returncode == 0 and
                   norm_skip(output_lines(r.stdout)) == norm_skip(expected_manifest(ref_entries, dest)),
                   f"rc={r.returncode} lean={output_lines(r.stdout)[:3]}")
-        for dest in ["out\nOK", "o\tut", "o\x7f", "o\u2028ut", "o\ufffdut"]:
+        # The last is bytes that are not UTF-8, which the Lean runtime
+        # reads as U+FFFD before `main` runs.
+        for dest in ["out\nOK", "o\tut", "o\x7f", "o\u2028ut", "o\ufffdut", b"o\xffut"]:
             r = run_lean("manifest", str(archive_a), dest)
             check(f"manifest-dest-refused {dest!r}", r.returncode == 2 and r.stdout == "",
                   f"rc={r.returncode} out={r.stdout[:100]!r}")
@@ -831,14 +943,17 @@ def main():
             path = td / f"readable{i}.tar"
             path.write_bytes(raw)
             ref = tarfile_view(path)
-            r = run_lean("manifest", str(path), "out")
             # tarfile reports an old-style directory (typeflag NUL, name
-            # ending in `/`) as typeflag 5, so SKIP lines are compared
-            # without their typeflag here.
-            drop_code = lambda ls: [l.rsplit("\t", 1)[0] if l.startswith("SKIP") else l
-                                    for l in norm_skip(ls)]
-            got = drop_code(output_lines(r.stdout))
-            want = drop_code(expected_manifest(ref))
+            # ending in `/`) as typeflag 5. The tool's output is read the
+            # same way (`as_tarfile_reads`); no other typeflag changes.
+            r = run_lean("list", str(path))
+            got = norm([as_tarfile_reads(row) for row in list_rows(r.stdout)])
+            want = norm([(escape_name(n), len(d), t) for (n, d, t) in ref])
+            check(f"readable-list: {label}", r.returncode == 0 and got == want,
+                  f"rc={r.returncode} lean={got} expected={want}")
+            r = run_lean("manifest", str(path), "out")
+            got = norm_skip([skip_as_tarfile_reads(l) for l in output_lines(r.stdout)])
+            want = norm_skip(expected_manifest(ref))
             check(f"readable-manifest: {label}", r.returncode == 0 and got == want,
                   f"rc={r.returncode} lean={got} expected={want}")
 
@@ -853,15 +968,21 @@ def main():
                               capture_output=True, text=True).stdout.strip()
 
     inputs = fixed_archives + stats["archives"]
+    if rev is None:
+        header = ["Written by `tests/run_tests.py`. Rerun it to check these numbers."]
+    else:
+        header = [f"Written by `tests/run_tests.py --tool {rev}`. The tool was built from",
+                  f"commit {rev}, not from this checkout."]
     lines = [
         "# Test results",
         "",
-        "Written by `tests/run_tests.py`. Rerun it to check these numbers.",
+        *header,
         "",
         f"- Oracle: Python {platform.python_version()} `tarfile`, and the model of the "
         f"format in `tests/run_tests.py`, which tarfile checks on every unmutated "
         f"archive both read",
         f"- Lean: {lean_ver}",
+        f"- System tar: {tar_version()}",
         f"- Seed: {args.seed}",
         f"- Inputs: {inputs}",
         f"- Archives: {fixed_archives} fixed, {stats['archives']} random",
@@ -873,18 +994,27 @@ def main():
         f"- Manifest outcome on archive A: {ok_count} extracted, "
         f"{rej_count} rejected by the path gate, {skip_count} skipped as non-regular",
         f"- Files written by the Lean `create` command and read back by Python: {len(files)}",
-        "- Broken inputs rejected with exit code 1: truncated archive, "
+        "- Broken inputs that must fail with exit code 1: truncated archive, "
         "random garbage, corrupted checksum",
-        f"- Archives in formats the pilot does not read, rejected with exit code 1 "
-        f"by `list` and `manifest`: {unsupported}",
-        f"- Archives in other formats it reads, compared with tarfile: {readable}",
+        f"- Archives in formats the pilot does not read, which must fail with exit code 1 "
+        f"under `list` and `manifest`: {unsupported}",
+        f"- Archives in other formats it reads, compared with tarfile under `list` and "
+        f"`manifest`: {readable}",
         f"- Failures: {len(failures)}",
+        "",
+        "How the fixed archives are compared with tarfile. tarfile drops the `/` at the",
+        "end of a directory name, so directory names in `list` and names in `SKIP` lines",
+        "are compared without it. tarfile also reads an entry with typeflag NUL and a",
+        "name ending in `/` as a directory, typeflag 5, so for the readable archives the",
+        "tool's typeflag 0 on such an entry is read as 5. Every other typeflag is",
+        "compared as printed. The random archives are compared with the model, and the",
+        "model with tarfile as `tarfile_agrees` in `tests/run_tests.py` says.",
         "",
     ]
     if failures:
         lines += ["## Failures", ""] + [f"- {f}" for f in failures] + [""]
-    RESULTS.write_text("\n".join(lines))
-    print(f"{checks - len(failures)}/{checks} checks passed; results in {RESULTS}")
+    results.write_text("\n".join(lines))
+    print(f"{checks - len(failures)}/{checks} checks passed; results in {results}")
     return 1 if failures else 0
 
 
