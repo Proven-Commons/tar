@@ -76,7 +76,7 @@ lake comparator --paranoid
 python3 tests/run_tests.py
 ```
 
-`lake comparator --paranoid` builds the statements and the proofs in a sandbox. It checks that each theorem in `Proofs/` proves exactly the statement in `Spec.lean`, using only the axioms `propext`, `Classical.choice`, and `Quot.sound`, and replays it through every kernel shipped with Lean. The test script builds the project, runs the fixed and random cases from a recorded seed, and rewrites `tests/TEST-RESULTS.md`.
+`lake comparator --paranoid` builds the statements and the proofs in a sandbox. It checks that each theorem in `Proofs/` proves exactly the statement in `Spec.lean`, using only the axioms `propext`, `Classical.choice`, and `Quot.sound`, and replays it through every kernel shipped with Lean. The test script builds the project, runs the fixed and random cases from a recorded seed, and rewrites `tests/TEST-RESULTS.md`. It checks the tool, not the proofs, and does not run the comparator, so run the comparator as well. The bar job in CI (`.github/workflows/bar.yml`) runs both, through mission's `bar/check.py`.
 
 `python3 tests/compare_old.py --new 1273382` builds the tool as it was before the containment change (commit 7517a86) and the tool of that change (commit 1273382), and compares the two on 3,000 random archives under five destinations, from a recorded seed. Once the new escapes in names are undone, the output must be the same. It writes `tests/COMPARE-OLD.md`. Without `--new`, it compares this checkout's tool, and runs differ on purpose: some random names end in `/` with a regular typeflag, and this tool skips such an entry, or refuses the archive when the entry has data.
 
@@ -99,3 +99,4 @@ python3 tests/run_tests.py
 - `bar.toml`: the record for the bar check: status, authors, approvals, and where things are.
 - `SPEC.md`: the specification in plain words.
 - `tests/run_tests.py`: the differential tests.
+- `tests/compare_old.py`: the tool before the containment change and the tool of that change, compared on random archives.
