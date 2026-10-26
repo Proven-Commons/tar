@@ -13,9 +13,12 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    # Both lines pin the same commit of Proven-Commons/mission: bar v2, as
-    # proposed in its pull request #2. Move both to a release tag once
-    # mission publishes one.
+    # Both lines pin the same commit of Proven-Commons/mission: the bar v2
+    # check from its pull request #2, now merged into main. Mission has no
+    # release tag yet. Move both lines to one once it publishes one
+    # (Proven-Commons/mission#10).
+    # Item 7 also needs `main` here to require this check. That is a repo
+    # setting only a maintainer can change, tracked in mission#10 too.
     uses: Proven-Commons/mission/.github/workflows/verified-bar.yml@6ba85c27abaaf07905c9316aa96dc29f7b5847a2
     with:
       bar-ref: 6ba85c27abaaf07905c9316aa96dc29f7b5847a2
