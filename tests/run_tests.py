@@ -58,12 +58,31 @@ EXE = PILOT_DIR / ".lake" / "build" / "bin" / "tar-pilot"
 RESULTS = PILOT_DIR / "tests" / "TEST-RESULTS.md"
 checks = 0
 failures = []
+# For each kind of check, how many ran and how many failed.
+kinds = {}
+# The record lists every failure of a fixed case, and this many of the
+# random cases; the script prints them all as it runs.
+RANDOM_SHOWN = 20
+
+
+def kind_of(name):
+    """A check's name without the archive or destination it ran on."""
+    if name.startswith("random "):
+        return "random " + name.split(" ", 2)[2]
+    kind = re.split(r"[ :]", name, maxsplit=1)[0]
+    for cmd in ("list", "manifest"):
+        if name.endswith(f"({cmd})"):
+            kind += f" ({cmd})"
+    return kind
 
 
 def check(name, ok, detail=""):
     global checks
     checks += 1
+    count = kinds.setdefault(kind_of(name), [0, 0])
+    count[0] += 1
     if not ok:
+        count[1] += 1
         failures.append(f"{name}: {detail}")
         print(f"FAIL {name}: {detail}")
 
@@ -1012,7 +1031,15 @@ def main():
         "",
     ]
     if failures:
-        lines += ["## Failures", ""] + [f"- {f}" for f in failures] + [""]
+        lines += ["## Failures by check", "", "| Check | Run | Failed |", "|-------|-----|--------|"]
+        lines += [f"| {k} | {n} | {f} |" for k, (n, f) in kinds.items()]
+        fixed = [f for f in failures if not f.startswith("random ")]
+        rand = [f for f in failures if f.startswith("random ")]
+        lines += ["", "## Failures", ""] + [f"- {f}" for f in fixed + rand[:RANDOM_SHOWN]] + [""]
+        if len(rand) > RANDOM_SHOWN:
+            lines += [f"This lists every failure of a fixed case, and the first {RANDOM_SHOWN} of the",
+                      f"{len(rand)} failures of random cases. The script prints them all as it runs.",
+                      ""]
     results.write_text("\n".join(lines))
     print(f"{checks - len(failures)}/{checks} checks passed; results in {results}")
     return 1 if failures else 0

@@ -80,7 +80,7 @@ python3 tests/run_tests.py
 
 `python3 tests/compare_old.py --new 1273382` builds the tool as it was before the containment change (commit 7517a86) and the tool of that change (commit 1273382), and compares the two on 3,000 random archives under five destinations, from a recorded seed. Once the new escapes in names are undone, the output must be the same. It writes `tests/COMPARE-OLD.md`. Without `--new`, it compares this checkout's tool, and runs differ on purpose: some random names end in `/` with a regular typeflag, and this tool skips such an entry, or refuses the archive when the entry has data.
 
-`python3 tests/run_tests.py --tool 1273382` runs the same checks against the tool of the containment change (commit 1273382), from before the parser changes. It leaves out the axiom check, which reads this checkout's proofs, not the tool, and writes `tests/TEST-RESULTS-1273382.md`: 68 of the 107 checks fail there.
+`python3 tests/run_tests.py --tool 1273382` runs the same checks against the tool of the containment change (commit 1273382), from before the parser changes, and writes `tests/TEST-RESULTS-1273382.md`: 10,377 of the 23,269 checks fail there. The 3,134 checks of the model against `tarfile` do not run the tool, so they pass.
 
 `python3 tests/planted_bugs.py` plants, one at a time in a copy, a `sorry`, an axiom, an extra theorem that is not on the list, and a listed theorem left out of `TarPilot/Verify.lean`. It records that `lake build` passes on each and that the test script fails. It writes `tests/PLANTED-BUGS.md`.
 
