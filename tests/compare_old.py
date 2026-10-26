@@ -21,10 +21,10 @@ Run from anywhere (needs git, and the old commit in the history):
     python3 tests/compare_old.py [--seed N] [--count N] [--new REV]
 
 With `--new REV`, the new tool is built from commit REV instead of this
-checkout. The PR's run compared 7517a86 with its own commit, 1273382,
-whose tool is the one in this checkout. A later change to the parser
-changes the output on purpose, so on a later branch pass
-`--new 1273382` to rerun the PR's run.
+checkout. The comparison is about the tool at 1273382, the commit of
+the containment change. A later change to the parser changes the
+output on purpose, so on a later branch pass `--new 1273382` to rerun
+it.
 
 It builds both tools, writes `tests/COMPARE-OLD.md`, and exits non-zero
 if any run differs.
