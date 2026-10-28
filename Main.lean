@@ -43,14 +43,12 @@ def runManifest (file dest : String) : IO UInt32 := do
   | some entries =>
     let destCs := if dest = "" then [] else dest.splitOn "/"
     for e in entries do
-      if isRegular e then
-        match gate e.name with
-        | none => IO.println s!"REJECT\t{e.name}"
-        | some rel =>
-          let path := String.intercalate "/" (destCs ++ rel)
-          IO.println s!"OK\t{path}\t{e.data.size}\t{byteSum e.data}"
-      else
-        IO.println s!"SKIP\t{e.name}\t{e.typeflag.toNat}"
+      match extractEntry destCs e with
+      | some (path, bytes) =>
+        IO.println s!"OK\t{joinPath path}\t{bytes.size}\t{byteSum bytes}"
+      | none =>
+        if isRegular e then IO.println s!"REJECT\t{e.name}"
+        else IO.println s!"SKIP\t{e.name}\t{e.typeflag.toNat}"
     return 0
 
 def runCreate (out : String) (files : List String) : IO UInt32 := do

@@ -7,14 +7,16 @@ below. Run from anywhere:
 
     python3 tests/run_tests.py
 
-It builds the Lean project if the executable is missing, runs all
+It builds the Lean project, runs all
 cases in a temporary directory, writes `tests/TEST-RESULTS.md`, and
 exits non-zero if any case fails.
 """
 
 import io
 import os
+import posixpath
 import random
+import re
 import subprocess
 import sys
 import tarfile
@@ -24,6 +26,9 @@ from pathlib import Path
 PILOT_DIR = Path(__file__).resolve().parent.parent
 EXE = PILOT_DIR / ".lake" / "build" / "bin" / "tar-pilot"
 RESULTS = PILOT_DIR / "tests" / "TEST-RESULTS.md"
+PATH_SEED = 20261024
+PATH_RANDOM_CASES = 512
+DESTINATIONS = ("", ".", "out", "out/", "./out//nested/..", "../dest", "/tmp/out", "/")
 
 checks = 0
 failures = []
@@ -52,7 +57,7 @@ def spec_gate(name):
         return None
     out = []
     for comp in name.split("/"):
-        if comp == "..":
+        if comp == ".." or "\0" in comp:
             return None
         if comp in ("", "."):
             continue
@@ -102,7 +107,7 @@ def build_archive_a(path):
     return entries
 
 
-def expected_manifest(entries_data):
+def expected_manifest(entries_data, dest="out"):
     """Expected manifest lines from the spec, in archive order.
     entries_data: list of (name, data, typeflag_byte)."""
     lines = []
@@ -114,14 +119,18 @@ def expected_manifest(entries_data):
         if rel is None:
             lines.append(f"REJECT\t{name}")
         else:
-            joined = "/".join(["out"] + rel)
+            joined = "/".join((dest.split("/") if dest else []) + rel)
             lines.append(f"OK\t{joined}\t{len(data)}\t{sum(data)}")
     return lines
 
 
 def main():
-    if not EXE.exists():
-        subprocess.run(["lake", "build"], cwd=PILOT_DIR, check=True)
+    # Rebuild even if the binary exists: source edits must reach the tests.
+    subprocess.run(["lake", "build"], cwd=PILOT_DIR, check=True)
+    regression = subprocess.run(["lake", "env", "lean", "tests/PathSafety.lean"],
+                                cwd=PILOT_DIR, capture_output=True, text=True)
+    check("path-regressions", regression.returncode == 0,
+          regression.stdout + regression.stderr)
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
@@ -213,16 +222,61 @@ def main():
         r = run_lean("list", str(badsum))
         check("bad-checksum-fails", r.returncode == 1, f"rc={r.returncode}")
 
-    # 6. Axiom check: only the three standard axioms.
+        # 6. Exercise the actual CLI extraction decision with repeated names,
+        # hostile components and mixed outcomes, under varied destinations.
+        rng = random.Random(PATH_SEED)
+        names = ["../evil", "a/../../etc/passwd", "/abs", "", ".", "././", "a//b",
+                 "./a/./b/", "same", "same", "trailing/", "..."]
+        alphabet = ("a", "b", "..", ".", "", "...", "file.txt")
+        names += ["/".join(rng.choices(alphabet, k=rng.randrange(1, 9)))
+                  for _ in range(PATH_RANDOM_CASES)]
+        path_archive = td / "paths.tar"
+        with tarfile.open(path_archive, "w", format=tarfile.USTAR_FORMAT) as tf:
+            for i, name in enumerate(names):
+                ti = tarfile.TarInfo(name)
+                ti.type = (tarfile.REGTYPE, tarfile.AREGTYPE,
+                           tarfile.SYMTYPE, tarfile.DIRTYPE)[i % 4]
+                # tarfile treats legacy NUL-type names ending in '/' as
+                # directories; keep their headers free of regular-file data.
+                if ti.type == tarfile.AREGTYPE and name.endswith("/"):
+                    ti.type = tarfile.REGTYPE
+                data = bytes([i % 256]) * (i % 17)
+                ti.size = len(data) if ti.type in (tarfile.REGTYPE, tarfile.AREGTYPE) else 0
+                tf.addfile(ti, io.BytesIO(data) if ti.size else None)
+        with tarfile.open(path_archive) as tf:
+            path_entries = [(m.name, tf.extractfile(m).read() if m.isreg() else b"", m.type[0])
+                            for m in tf.getmembers()]
+        check("path-reference-count", len(path_entries) == len(names),
+              f"read {len(path_entries)} of {len(names)} generated entries")
+        for dest in DESTINATIONS:
+            r = run_lean("manifest", str(path_archive), dest)
+            actual = norm_skip(r.stdout.splitlines())
+            expected = norm_skip(expected_manifest(path_entries, dest))
+            differences = [(i, a, b) for i, (a, b) in enumerate(zip(actual, expected)) if a != b]
+            check(f"path-manifest-{dest!r}", r.returncode == 0 and actual == expected,
+                  f"rc={r.returncode}, stderr={r.stderr}, lengths={len(actual)}/{len(expected)}, "
+                  f"differences={differences[:3]}")
+            root = posixpath.normpath(posixpath.join("/sandbox", dest))
+            emitted = [line.split("\t")[1] for line in actual if line.startswith("OK\t")]
+            resolved = [posixpath.normpath(posixpath.join("/sandbox", path)) for path in emitted]
+            check(f"path-containment-{dest!r}", bool(resolved) and all(
+                posixpath.commonpath([root, path]) == root and path != root for path in resolved),
+                f"root={root}, paths={resolved[:5]}")
+
+    # 7. Axiom check: every named theorem must print only standard axioms.
     ax = subprocess.run(["lake", "env", "lean", "TarPilot/Verify.lean"],
                         cwd=PILOT_DIR, capture_output=True, text=True)
     ax_out = ax.stdout + ax.stderr
     check("axioms-run", ax.returncode == 0, ax_out[:400])
-    for thm in ["gate_sound", "cleanComponents_sound", "extractAll_safe",
-                "extractArchive_safe"]:
-        check(f"axioms-{thm}", thm in ax_out, ax_out[:400])
-    bad_axioms = [w for w in ["sorryAx"] if w in ax_out]
-    check("axioms-no-sorry", not bad_axioms, ax_out[:400])
+    allowed_axioms = {"propext", "Classical.choice", "Quot.sound"}
+    for thm in ["gate_sound", "cleanComponents_sound", "extractAll_safe", "extractArchive_safe",
+                "cleanComponents_plain", "gate_plain", "extractEntry_contained", "extractAll_contained",
+                "extractAll_joined", "extractAll_resolves_inside", "extractEntry_resolves_inside"]:
+        match = re.search(rf"^'TarPilot\.{thm}' depends on axioms: \[([^\]]*)\]$", ax_out, re.M)
+        no_axioms = f"'TarPilot.{thm}' does not depend on any axioms" in ax_out.splitlines()
+        axioms = {a.strip() for a in match[1].split(",") if a.strip()} if match else set()
+        check(f"axioms-{thm}", (match is not None or no_axioms) and axioms <= allowed_axioms,
+              f"missing theorem or unexpected axioms: {sorted(axioms - allowed_axioms)}; {ax_out[:400]}")
 
     lean_ver = subprocess.run(["lean", "--version"], capture_output=True,
                               text=True).stdout.strip()
@@ -239,6 +293,9 @@ def main():
         f"- Manifest outcome on archive A: {ok_count} extracted, "
         f"{rej_count} rejected by the path gate, {skip_count} skipped as non-regular",
         f"- Files written by the Lean `create` command and read back by Python: {len(files)}",
+        f"- Path regression entries: {len(path_entries)} ({PATH_RANDOM_CASES} random, seed {PATH_SEED}), "
+        f"compared with the spec under {len(DESTINATIONS)} destinations and checked with `posixpath`",
+        "- `tests/PathSafety.lean`: cleaner, gate, joined-path and relative-resolution regressions",
         "- Broken inputs rejected with exit code 1: truncated archive, "
         "random garbage, corrupted checksum",
         "",

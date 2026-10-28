@@ -2,10 +2,10 @@
   Whole-archive parsing, extraction, and writing.
 
   The extraction rule is the proved part, together with the path gate
-  in `Path.lean`: `extractAll` only emits a path built as
-  `dest ++ rel`, where `rel` passed the gate, and the theorem
-  `extractAll_safe` states that every emitted relative path has no
-  `..`, no empty component, no `.`, and is not empty.
+  in `Path.lean`: the CLI and `extractAll` both call `extractEntry`.
+  Each emitted path is `dest ++ rel`, where `rel` is a nonempty list
+  of plain names. The containment theorems also cover joining the
+  components into a string and resolving that relative path lexically.
 
   Parsing and writing are covered by differential tests against
   Python's `tarfile` module (see `tests/`), not by a proof.
@@ -57,43 +57,96 @@ def parseArchive (data : ByteArray) : Option (List RawEntry) :=
 def isRegular (e : RawEntry) : Bool :=
   e.typeflag == '0' || e.typeflag == Char.ofNat 0
 
+/-- The extraction decision shared by the CLI and the in-memory model. -/
+def extractEntry (dest : List String) (e : RawEntry) : Option (List String × ByteArray) :=
+  if isRegular e then
+    (gate e.name).map fun rel => (dest ++ rel, e.data)
+  else none
+
+/-- An accepted entry extends the destination by nonempty plain names. -/
+theorem extractEntry_contained (dest : List String) (e : RawEntry)
+    (path : List String) (bytes : ByteArray)
+    (h : extractEntry dest e = some (path, bytes)) :
+    ∃ rel, rel ≠ [] ∧ path = dest ++ rel ∧ ∀ c ∈ rel, PlainName c := by
+  unfold extractEntry at h
+  split at h
+  · cases hg : gate e.name with
+    | none => simp [hg] at h
+    | some rel =>
+      simp only [hg, Option.map_some, Option.some.injEq, Prod.mk.injEq] at h
+      obtain ⟨hp, hne⟩ := gate_plain e.name rel hg
+      exact ⟨rel, hne, h.1.symm, hp⟩
+  · simp at h
+
 /-- Extract entries into a list of `(path, data)` pairs, in memory.
     The path of each pair is the destination components followed by the
     gated relative components of the entry name. -/
 def extractAll (dest : List String) (entries : List RawEntry) :
     List (List String × ByteArray) :=
-  entries.filterMap fun e =>
-    if isRegular e then
-      (gate e.name).map fun rel => (dest ++ rel, e.data)
-    else none
+  entries.filterMap (extractEntry dest)
+
+/-- Every emitted relative path is nonempty and contains only plain names,
+    including the absence of embedded separators and NUL. -/
+theorem extractAll_contained (dest : List String) (entries : List RawEntry)
+    (path : List String) (bytes : ByteArray)
+    (h : (path, bytes) ∈ extractAll dest entries) :
+    ∃ rel, rel ≠ [] ∧ path = dest ++ rel ∧ ∀ c ∈ rel, PlainName c := by
+  obtain ⟨e, _, he⟩ := List.mem_filterMap.mp h
+  exact extractEntry_contained dest e path bytes he
 
 /-- Every path `extractAll` emits is the destination followed by a
     gated relative path: no `..`, no empty component, no `.`, and the
-    relative path is not empty. So no emitted path escapes the
-    destination. -/
+    relative path is not empty. This is the original component-list
+    guarantee; see `extractAll_resolves_inside` for the joined string. -/
 theorem extractAll_safe : ∀ (dest : List String) (entries : List RawEntry)
     (path : List String) (bytes : ByteArray),
     (path, bytes) ∈ extractAll dest entries →
     ∃ rel, path = dest ++ rel ∧
       ".." ∉ rel ∧ "" ∉ rel ∧ "." ∉ rel ∧ rel ≠ [] := by
   intro dest entries path bytes h
-  unfold extractAll at h
-  rw [List.mem_filterMap] at h
-  obtain ⟨e, _, hfe⟩ := h
-  by_cases hreg : isRegular e
-  · rw [if_pos hreg] at hfe
-    cases hg : gate e.name with
-    | none =>
-      rw [hg] at hfe
-      simp at hfe
-    | some rel =>
-      rw [hg] at hfe
-      simp only [Option.map_some, Option.some.injEq, Prod.mk.injEq] at hfe
-      obtain ⟨hpath, _⟩ := hfe
-      obtain ⟨h1, h2, h3, h4⟩ := gate_sound e.name rel hg
-      exact ⟨rel, hpath.symm, h1, h2, h3, h4⟩
-  · rw [if_neg hreg] at hfe
-    exact absurd hfe (by simp)
+  obtain ⟨rel, hne, heq, hp⟩ := extractAll_contained dest entries path bytes h
+  exact ⟨rel, heq, fun hm => (hp _ hm).2.2.1 rfl,
+    fun hm => (hp _ hm).1 rfl, fun hm => (hp _ hm).2.1 rfl, hne⟩
+
+/-- Rendering a path and splitting it again preserves the destination
+    and plain relative names. Destination components must be slash-free. -/
+theorem extractAll_joined (dest : List String) (entries : List RawEntry)
+    (path : List String) (bytes : ByteArray)
+    (hdest : ∀ d ∈ dest, '/' ∉ d.toList)
+    (h : (path, bytes) ∈ extractAll dest entries) :
+    ∃ rel, rel ≠ [] ∧ (∀ c ∈ rel, PlainName c) ∧
+      pathComponents (joinPath path) = dest ++ rel := by
+  obtain ⟨rel, hne, hpath, hplain⟩ := extractAll_contained dest entries path bytes h
+  refine ⟨rel, hne, hplain, ?_⟩
+  subst hpath
+  apply pathComponents_join
+  · intro s hs
+    rcases List.mem_append.mp hs with hs | hs
+    · exact hdest s hs
+    · exact (hplain s hs).2.2.2.1
+  · simp [hne]
+
+/-- The rendered path resolves to the resolved destination followed by
+    plain names. This is lexical containment of a relative POSIX path,
+    without symlinks; it is not a theorem about filesystem writes. -/
+theorem extractAll_resolves_inside (dest : List String) (entries : List RawEntry)
+    (path : List String) (bytes : ByteArray)
+    (hdest : ∀ d ∈ dest, '/' ∉ d.toList)
+    (h : (path, bytes) ∈ extractAll dest entries) :
+    ∃ rel, rel ≠ [] ∧ (∀ c ∈ rel, PlainName c) ∧
+      resolve [] (pathComponents (joinPath path)) = resolve [] dest ++ rel := by
+  obtain ⟨rel, hne, hplain, hjoin⟩ := extractAll_joined dest entries path bytes hdest h
+  exact ⟨rel, hne, hplain, by rw [hjoin, resolve_append, resolve_plain rel _ hplain]⟩
+
+/-- The same joined-string guarantee for the decision the CLI calls. -/
+theorem extractEntry_resolves_inside (dest : List String) (e : RawEntry)
+    (path : List String) (bytes : ByteArray)
+    (hdest : ∀ d ∈ dest, '/' ∉ d.toList)
+    (h : extractEntry dest e = some (path, bytes)) :
+    ∃ rel, rel ≠ [] ∧ (∀ c ∈ rel, PlainName c) ∧
+      resolve [] (pathComponents (joinPath path)) = resolve [] dest ++ rel := by
+  apply extractAll_resolves_inside dest [e] path bytes hdest
+  exact List.mem_filterMap.mpr ⟨e, by simp, h⟩
 
 /-- Parse, then extract. -/
 def extractArchive (dest : List String) (data : ByteArray) :
