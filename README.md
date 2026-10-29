@@ -4,7 +4,7 @@ This repo reads a tar archive (ustar format) and works out where each regular fi
 
 It is the first Proven Commons project, and the subject of the org's [bar audit of 2026-10-24](https://github.com/Proven-Commons/mission/blob/main/reviews/tar/2026-10-24-bar-audit.md), whose findings it fixes. The org's home repo, [mission](https://github.com/Proven-Commons/mission), publishes the verified bar it is measured against.
 
-Status: in progress. The specification has not yet been approved by a reviewer apart from its author, so this is not verified.
+Status: in progress. The specification has not yet been approved by a reviewer apart from its authors, so this is not verified.
 
 ## Run it
 
@@ -50,7 +50,8 @@ The gate's rules: a name that starts with `/` is rejected. A name with a `..` co
   - a base-256 size field, or a size field of spaces, which GNU tar refuses;
   - a regular typeflag with a name ending in `/`, which reads as a directory, and a size that is not zero, where readers disagree on whether data follows;
   - a checksum over signed bytes, which some old tars wrote and GNU tar and `tarfile` accept;
-  - any other magic, such as an old Unix V7 header.
+  - any other magic, such as an old Unix V7 header;
+  - anything after the end of the archive but zero bytes, such as an entry after a single zero block or a second archive joined to the first, and a length that is not a whole number of 512-byte blocks. GNU tar with `--ignore-zeros`, and `tarfile` with `ignore_zeros=True`, read on past zero blocks.
 - Writing to disk. Extraction works on an in-memory list, so the step from a proved path to a safe write on a real filesystem (races, symlinks already on disk, a symlinked destination) is outside this project for now. The proofs resolve paths lexically, as POSIX does when no component is a symlink.
 - The destination itself. The proofs say where a path lands relative to the destination, not whether the destination is a safe place to write. The destination is the command-line argument as the Lean runtime decodes it from UTF-8.
 
