@@ -25,10 +25,10 @@ It has two parts:
   ustar, GNU and pax formats, with hostile names, every POSIX entry
   type, and random data, and the same kind of archives mutated (bytes
   flipped, header fields overwritten with or without a fixed checksum,
-  cut, extended, or changed where the archive ends). For each, the tool's output must equal the
-  model's. Where the model and tarfile both read an unmutated archive,
-  they must also agree on every entry, which checks the model against
-  an independent reader.
+  cut, extended, or changed where the archive ends). For each, the
+  tool's output must equal the model's. Where the model and tarfile
+  both read an unmutated archive, they must also agree on every entry,
+  which checks the model against an independent reader.
 
 It builds the Lean project first, so it never checks stale code, writes
 `tests/TEST-RESULTS.md`, and exits non-zero if any case fails. The
@@ -216,6 +216,12 @@ def unsupported_archives(work):
     for code in b"DMNSVAZ":
         yield f"unknown typeflag {chr(code)}", patch_header(
             one_file(tarfile.USTAR_FORMAT, "u.txt"), 156, bytes([code]))
+    # The same with no data. With data, a reader that took the typeflag
+    # as a non-regular entry would then fail on the data as a header, so
+    # only these show that the typeflag itself is refused.
+    for code in b"xgLKDMNSVAZ":
+        yield f"typeflag {chr(code)} with size 0", patch_header(
+            one_file(tarfile.USTAR_FORMAT, "u.txt", data=b""), 156, bytes([code]))
     yield "base-256 size field", patch_header(
         one_file(tarfile.USTAR_FORMAT, "b.txt"), 124, b"\x80" + b"\x00" * 10 + b"\x01")
     yield "ustar magic with a GNU version", patch_header(
@@ -723,8 +729,10 @@ def header_offsets(data):
 
 def mutate_end(rng, out):
     """One change where the archive ends: keep one, two or three zero
-    blocks; put an archive after a single zero block, or after the whole
-    archive; set a byte after the end; or cut the end blocks short."""
+    blocks; put the archive again after a single zero block, or after
+    the whole archive; set a byte after the end to one that is not
+    zero; cut the end short; or end with 1023, 1025 or 1536 zero
+    bytes."""
     end = min(walk_headers(bytes(out))[1], len(out))
     kind = rng.randrange(6)
     if kind == 0:

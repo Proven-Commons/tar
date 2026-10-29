@@ -2,8 +2,10 @@
 
 Written by `python3 tests/planted_bugs.py --bar <mission>/bar/check.py`.
 
-Each row is one small change to the proofs, the statements, or the list of
-theorems checked, made in a copy. On each copy these ran, in this order:
+Each row is one small change, made in a copy: to the proofs, the statements, or
+the list of theorems checked, or, in the rows that start `parser:` or
+`printer:`, to code no statement is about, which only the tests can catch. On
+each copy these ran, in this order:
 
 - `lake build`;
 - `lake comparator --paranoid`;
@@ -27,6 +29,17 @@ On the unchanged copy, the bar check gives: item 1 OPEN, item 2 PASS, item 3 PAS
 | theorem of Spec.lean left out of comparator.json (manifest_lines) | `comparator.json` | passes | accepts | none | 0 | item 3: PASS to FAIL: `lake comparator --paranoid` passes, but comparator.json does not name these theorems of the challenge file: TarPilot.manifest_lines | yes |
 | sorry in Spec.escape_noSpecial | `Spec/Defs.lean` | passes, warns of a `sorry` in `Spec/Defs.lean` | rejects: error: Illegal axiom detected: 'sorryAx' | TarPilot.manifest_lines: sorryAx | 0 | item 3: PASS to OPEN: `lake comparator --paranoid`: a proof is still `sorry`, which an in-progress project may have; item 4: PASS to OPEN: unfinished proofs, which an in-progress project may have: Spec/Defs.lean:123 sorry | yes |
 | axiom cheat : False behind Spec.escape_noSpecial | `Spec/Defs.lean` | passes | rejects: error: Illegal axiom detected: 'Spec.cheat' | TarPilot.manifest_lines: Spec.cheat | 0 | item 3: PASS to FAIL: `lake comparator --paranoid` exited 1: ... error: Illegal axiom detected: 'Spec.cheat'; item 4: PASS to FAIL: forbidden features: Spec/Defs.lean:119 axiom | yes |
+| parser: the first zero block ends the archive, whatever follows (the rule before tar#7) | `TarPilot/Archive.lean` | passes | accepts | none | 224 | item 5: PASS to FAIL: tests/TEST-RESULTS.md records 224 failures | yes |
+| parser: a single zero block is an end | `TarPilot/Archive.lean` | passes | accepts | none | 4 | item 5: PASS to FAIL: tests/TEST-RESULTS.md records 4 failures | yes |
+| parser: bytes after the end blocks are not read | `TarPilot/Archive.lean` | passes | accepts | none | 104 | item 5: PASS to FAIL: tests/TEST-RESULTS.md records 104 failures | yes |
+| parser: an input of any length is read | `TarPilot/Archive.lean` | passes | accepts | none | 60 | item 5: PASS to FAIL: tests/TEST-RESULTS.md records 60 failures | yes |
+| parser: a GNU header with something in bytes 345 to 499 is read | `TarPilot/Header.lean` | passes | accepts | none | 10 | item 5: PASS to FAIL: tests/TEST-RESULTS.md records 10 failures | yes |
+| parser: a pax header (typeflag x) is read as an entry | `TarPilot/Header.lean` | passes | accepts | none | 2 | item 5: PASS to FAIL: tests/TEST-RESULTS.md records 2 failures | yes |
+| parser: a name that is not UTF-8 is read as empty | `TarPilot/Header.lean` | passes | accepts | none | 8 | item 5: PASS to FAIL: tests/TEST-RESULTS.md records 8 failures | yes |
+| parser: a link or directory is followed by its size in data (the rule before tar#5) | `TarPilot/Header.lean` | passes | accepts | none | 367 | item 5: PASS to FAIL: tests/TEST-RESULTS.md records 367 failures | yes |
+| parser: a regular typeflag with a name ending in / and data is read | `TarPilot/Header.lean` | passes | accepts | none | 22 | item 5: PASS to FAIL: tests/TEST-RESULTS.md records 22 failures | yes |
+| parser: a size field of spaces reads as zero | `TarPilot/Octal.lean` | passes | accepts | none | 2 | item 5: PASS to FAIL: tests/TEST-RESULTS.md records 2 failures | yes |
+| printer: list prints names as they are, unescaped | `Main.lean` | passes | accepts | none | 293 | item 5: PASS to FAIL: tests/TEST-RESULTS.md records 293 failures | yes |
 
 ## The changes
 
@@ -192,9 +205,102 @@ On the unchanged copy, the bar check gives: item 1 OPEN, item 2 PASS, item 3 PAS
 +   exact cheat.elim
 ```
 
+**parser: the first zero block ends the archive, whatever follows (the rule before tar#7)** in `TarPilot/Archive.lean`:
+
+```
+-         if off + 1024 ≤ data.size ∧ zerosFrom data off then some [] else none
++         some []
+```
+
+**parser: the first zero block ends the archive, whatever follows (the rule before tar#7)** in `TarPilot/Archive.lean`:
+
+```
+-   if data.size % 512 ≠ 0 then none
+-   else parseBlocks data 0 (data.size / 512 + 1)
++   parseBlocks data 0 (data.size / 512 + 1)
+```
+
+**parser: a single zero block is an end** in `TarPilot/Archive.lean`:
+
+```
+-         if off + 1024 ≤ data.size ∧ zerosFrom data off then some [] else none
++         if zerosFrom data off then some [] else none
+```
+
+**parser: bytes after the end blocks are not read** in `TarPilot/Archive.lean`:
+
+```
+-         if off + 1024 ≤ data.size ∧ zerosFrom data off then some [] else none
++         if off + 1024 ≤ data.size then some [] else none
+```
+
+**parser: an input of any length is read** in `TarPilot/Archive.lean`:
+
+```
+-   if data.size % 512 ≠ 0 then none
+-   else parseBlocks data 0 (data.size / 512 + 1)
++   parseBlocks data 0 (data.size / 512 + 1)
+```
+
+**parser: a GNU header with something in bytes 345 to 499 is read** in `TarPilot/Header.lean`:
+
+```
+- let gnuPlain := magic = gnuMagic ∧ (sliceList block 345 155).all (· = 0)
++ let gnuPlain := magic = gnuMagic
+```
+
+**parser: a pax header (typeflag x) is read as an entry** in `TarPilot/Header.lean`:
+
+```
+- t == Char.ofNat 0 || ('0' ≤ t && t ≤ '7')
++ t == Char.ofNat 0 || ('0' ≤ t && t ≤ '7') || t == 'x'
+```
+
+**parser: a name that is not UTF-8 is read as empty** in `TarPilot/Header.lean`:
+
+```
+-   String.fromUTF8? (ByteArray.mk raw.toArray)
++   some ((String.fromUTF8? (ByteArray.mk raw.toArray)).getD "")
+```
+
+**parser: a link or directory is followed by its size in data (the rule before tar#5)** in `TarPilot/Header.lean`:
+
+```
+- size := if regular then size else 0
++ size := size
+```
+
+**parser: a regular typeflag with a name ending in / and data is read** in `TarPilot/Header.lean`:
+
+```
+-     if regular && dirName && size != 0 then none else
++ 
+```
+
+**parser: a size field of spaces reads as zero** in `TarPilot/Octal.lean`:
+
+```
+-   if digits.isEmpty && bs.any (· == 32) then none else
++ 
+```
+
+**printer: list prints names as they are, unescaped** in `Main.lean`:
+
+```
+- IO.println s!"{escapeName e.name}\t
++ IO.println s!"{e.name}\t
+```
+
 ## Not here
 
 The review rounds the PR describes also built changes to the code under proof.
 A change that alters an answer a statement fixes stops `lake build`, so it is
 for the proofs to catch, not for these checks. Those changes were not kept in
 the repo, so they are not planted here, and this record says nothing about them.
+
+The text of tar#6 also said that a reviewer planted 37 bugs in the parser and
+printer, that 36 of them still applied to that code, and that the tests caught
+all 36. Those bugs were not kept in the repo either. So which one no longer
+applied, and why, cannot be read from it, and that run cannot be repeated. The
+`parser:` and `printer:` rows above take its place: the faults are in
+`tests/planted_bugs.py`, and this record is what it wrote.

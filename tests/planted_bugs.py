@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Plant each fault below in a copy of the project, and record what catches it.
 
-The faults are a `sorry` and an axiom behind a helper lemma, an extra
-theorem, and a statement of `Spec.lean` left out of `comparator.json`,
-the list of theorems the comparator checks. The version of this script
+The first faults are in the proofs and the statements: a `sorry` and an
+axiom behind a helper lemma, an extra theorem, and a statement of
+`Spec.lean` left out of `comparator.json`, the list of theorems the
+comparator checks. The version of this script
 in the PR for audit F1 and F5 plants the same kinds of fault against
 `TarPilot/Verify.lean`. Here they are planted against the proof check
 this branch uses, `lake comparator --paranoid`. Two more are a `sorry`
@@ -24,9 +25,15 @@ in anything that proof uses. It checks only the theorems
 page does not claim, or a statement in `Spec.lean` that the list leaves
 out. Mission's `bar/check.py` checks those (items 2 and 3); pass
 `--bar` to run it on each copy. The tests in `tests/run_tests.py` check
-the tool, not the proofs, so they report no failures here. Nor do the
-proofs cover header parsing, archive writing, the `list` output or
-`Main.lean`. Only the tests cover those, and no fault is planted there.
+the tool, not the proofs, so they report no failures on those faults.
+
+The other faults are in what the proofs do not cover: how bytes are
+parsed into entries, where an archive ends among them, and the lines
+`list` prints. `lake build` and the comparator pass on each, as no
+statement is about them, so only the tests in `tests/run_tests.py` can
+catch them. Each undoes one rule of `SPEC.md`: the end of an archive
+(tar#7), the formats read (tar#5), or the escaping of names in `list`
+(tar#4).
 
 For each fault, this script copies the project into a temporary
 directory and makes the change there. On the copy it runs `lake build`,
@@ -97,6 +104,11 @@ EXTRA_PROOF = (" by\n  rw [TarPilot.gate_eq]\n"
 LIST_END = '    "TarPilot.extractArchive_eq"\n  ],'
 LIST_EXTRA = '    "TarPilot.extractArchive_eq",\n    "TarPilot.extra_claim"\n  ],'
 
+# The end of an archive, in TarPilot/Archive.lean.
+END_CHECK = "        if off + 1024 ≤ data.size ∧ zerosFrom data off then some [] else none\n"
+LENGTH_CHECK = "  if data.size % 512 ≠ 0 then none\n  else parseBlocks data 0 (data.size / 512 + 1)\n"
+LENGTH_GONE = "  parseBlocks data 0 (data.size / 512 + 1)\n"
+
 # (name, [(file, text to replace, replacement)], why it is equivalent or None)
 BUGS = [
     ("none: the copy as it is", [], None),
@@ -137,6 +149,48 @@ BUGS = [
     ("axiom cheat : False behind Spec.escape_noSpecial",
      [("Spec/Defs.lean", ESCAPE_HEAD + ESCAPE_PROOF,
        "axiom cheat : False\n\n" + ESCAPE_HEAD + ESCAPE_STMT + "  exact cheat.elim")],
+     None),
+    # The end of an archive (SPEC.md, "Reading an archive"; tar#7).
+    ("parser: the first zero block ends the archive, whatever follows (the rule before tar#7)",
+     [("TarPilot/Archive.lean", END_CHECK, "        some []\n"),
+      ("TarPilot/Archive.lean", LENGTH_CHECK, LENGTH_GONE)],
+     None),
+    ("parser: a single zero block is an end",
+     [("TarPilot/Archive.lean", END_CHECK,
+       END_CHECK.replace("off + 1024 ≤ data.size ∧ ", ""))],
+     None),
+    ("parser: bytes after the end blocks are not read",
+     [("TarPilot/Archive.lean", END_CHECK, END_CHECK.replace(" ∧ zerosFrom data off", ""))],
+     None),
+    ("parser: an input of any length is read",
+     [("TarPilot/Archive.lean", LENGTH_CHECK, LENGTH_GONE)],
+     None),
+    # The formats read (SPEC.md; tar#5).
+    ("parser: a GNU header with something in bytes 345 to 499 is read",
+     [("TarPilot/Header.lean",
+       "let gnuPlain := magic = gnuMagic ∧ (sliceList block 345 155).all (· = 0)",
+       "let gnuPlain := magic = gnuMagic")],
+     None),
+    ("parser: a pax header (typeflag x) is read as an entry",
+     [("TarPilot/Header.lean", "t == Char.ofNat 0 || ('0' ≤ t && t ≤ '7')",
+       "t == Char.ofNat 0 || ('0' ≤ t && t ≤ '7') || t == 'x'")],
+     None),
+    ("parser: a name that is not UTF-8 is read as empty",
+     [("TarPilot/Header.lean", "  String.fromUTF8? (ByteArray.mk raw.toArray)",
+       "  some ((String.fromUTF8? (ByteArray.mk raw.toArray)).getD \"\")")],
+     None),
+    ("parser: a link or directory is followed by its size in data (the rule before tar#5)",
+     [("TarPilot/Header.lean", "size := if regular then size else 0", "size := size")],
+     None),
+    ("parser: a regular typeflag with a name ending in / and data is read",
+     [("TarPilot/Header.lean", "    if regular && dirName && size != 0 then none else\n", "")],
+     None),
+    ("parser: a size field of spaces reads as zero",
+     [("TarPilot/Octal.lean", "  if digits.isEmpty && bs.any (· == 32) then none else\n", "")],
+     None),
+    # The lines `list` prints (SPEC.md, "The command-line tool"; tar#4).
+    ("printer: list prints names as they are, unescaped",
+     [("Main.lean", "IO.println s!\"{escapeName e.name}\\t", "IO.println s!\"{e.name}\\t")],
      None),
 ]
 
@@ -272,8 +326,10 @@ def write(rows, base_bar, count, check):
         "",
         f"Written by `{command}`.",
         "",
-        "Each row is one small change to the proofs, the statements, or the list of",
-        "theorems checked, made in a copy. On each copy these ran, in this order:",
+        "Each row is one small change, made in a copy: to the proofs, the statements, or",
+        "the list of theorems checked, or, in the rows that start `parser:` or",
+        "`printer:`, to code no statement is about, which only the tests can catch. On",
+        "each copy these ran, in this order:",
         "",
     ] + [f"- {step};" for step in steps[:-1]] + [f"- {steps[-1]}.", ""]
     if not check:
@@ -322,6 +378,13 @@ def write(rows, base_bar, count, check):
         "A change that alters an answer a statement fixes stops `lake build`, so it is",
         "for the proofs to catch, not for these checks. Those changes were not kept in",
         "the repo, so they are not planted here, and this record says nothing about them.",
+        "",
+        "The text of tar#6 also said that a reviewer planted 37 bugs in the parser and",
+        "printer, that 36 of them still applied to that code, and that the tests caught",
+        "all 36. Those bugs were not kept in the repo either. So which one no longer",
+        "applied, and why, cannot be read from it, and that run cannot be repeated. The",
+        "`parser:` and `printer:` rows above take its place: the faults are in",
+        "`tests/planted_bugs.py`, and this record is what it wrote.",
         "",
     ]
     (ROOT / "tests" / "PLANTED-BUGS.md").write_text("\n".join(lines))

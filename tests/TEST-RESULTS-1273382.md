@@ -7,19 +7,19 @@ commit 1273382, not from this checkout.
 - Lean: Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release)
 - System tar: tar (GNU tar) 1.35
 - Seed: 20261025
-- Inputs: 10072
-- Archives: 72 fixed, 10000 random
+- Inputs: 10083
+- Archives: 83 fixed, 10000 random
 - Random archives: 10000, 5000 of them mutated; the model reads 3966, and tarfile agrees with it on all 3135 unmutated ones both read
-- Checks run: 23347
+- Checks run: 23380
 - Archive A entries compared (list and manifest): 23
 - Manifest outcome on archive A: 10 extracted, 9 rejected by the path gate, 4 skipped as non-regular
 - Files written by the Lean `create` command and read back by Python: 3
 - Broken inputs that must fail with exit code 1: truncated archive, random garbage, corrupted checksum
-- Archives in formats the pilot does not read, which must fail with exit code 1 under `list` and `manifest`, and which the model must refuse: 35
+- Archives in formats the pilot does not read, which must fail with exit code 1 under `list` and `manifest`, and which the model must refuse: 46
 - Archives in other formats it reads, compared with tarfile under `list` and `manifest`: 19
 - Archives that do not end as `SPEC.md` says (a lone zero block, an entry or a nonzero byte after the end, two archives joined, a length that is not a whole number of blocks), which must fail with exit code 1 under `list` and `manifest`: 9
 - Archives that end as it says (two or more zero blocks, then only zeros), compared with the model under `list` and `manifest`: 4
-- Failures: 10997
+- Failures: 11019
 
 How the fixed archives are compared with tarfile. tarfile drops the `/` at the
 end of a directory name, so directory names in `list` and names in `SKIP` lines
@@ -46,9 +46,9 @@ model with tarfile as `tarfile_agrees` in `tests/run_tests.py` says.
 | garbage-fails | 1 | 0 |
 | bad-checksum-fails | 1 | 0 |
 | usage | 4 | 0 |
-| unsupported-fails (list) | 35 | 29 |
-| unsupported-fails (manifest) | 35 | 29 |
-| unsupported-model | 35 | 0 |
+| unsupported-fails (list) | 46 | 40 |
+| unsupported-fails (manifest) | 46 | 40 |
+| unsupported-model | 46 | 0 |
 | end-fails (list) | 9 | 8 |
 | end-fails (manifest) | 9 | 8 |
 | end-model | 9 | 0 |
@@ -104,6 +104,28 @@ model with tarfile as `tarfile_agrees` in `tests/run_tests.py` says.
 - unsupported-fails: unknown typeflag A (manifest): rc=0 out='SKIP\tu.txt\t65\n'
 - unsupported-fails: unknown typeflag Z (list): rc=0 out='u.txt\t1\t90\n'
 - unsupported-fails: unknown typeflag Z (manifest): rc=0 out='SKIP\tu.txt\t90\n'
+- unsupported-fails: typeflag x with size 0 (list): rc=0 out='u.txt\t0\t120\n'
+- unsupported-fails: typeflag x with size 0 (manifest): rc=0 out='SKIP\tu.txt\t120\n'
+- unsupported-fails: typeflag g with size 0 (list): rc=0 out='u.txt\t0\t103\n'
+- unsupported-fails: typeflag g with size 0 (manifest): rc=0 out='SKIP\tu.txt\t103\n'
+- unsupported-fails: typeflag L with size 0 (list): rc=0 out='u.txt\t0\t76\n'
+- unsupported-fails: typeflag L with size 0 (manifest): rc=0 out='SKIP\tu.txt\t76\n'
+- unsupported-fails: typeflag K with size 0 (list): rc=0 out='u.txt\t0\t75\n'
+- unsupported-fails: typeflag K with size 0 (manifest): rc=0 out='SKIP\tu.txt\t75\n'
+- unsupported-fails: typeflag D with size 0 (list): rc=0 out='u.txt\t0\t68\n'
+- unsupported-fails: typeflag D with size 0 (manifest): rc=0 out='SKIP\tu.txt\t68\n'
+- unsupported-fails: typeflag M with size 0 (list): rc=0 out='u.txt\t0\t77\n'
+- unsupported-fails: typeflag M with size 0 (manifest): rc=0 out='SKIP\tu.txt\t77\n'
+- unsupported-fails: typeflag N with size 0 (list): rc=0 out='u.txt\t0\t78\n'
+- unsupported-fails: typeflag N with size 0 (manifest): rc=0 out='SKIP\tu.txt\t78\n'
+- unsupported-fails: typeflag S with size 0 (list): rc=0 out='u.txt\t0\t83\n'
+- unsupported-fails: typeflag S with size 0 (manifest): rc=0 out='SKIP\tu.txt\t83\n'
+- unsupported-fails: typeflag V with size 0 (list): rc=0 out='u.txt\t0\t86\n'
+- unsupported-fails: typeflag V with size 0 (manifest): rc=0 out='SKIP\tu.txt\t86\n'
+- unsupported-fails: typeflag A with size 0 (list): rc=0 out='u.txt\t0\t65\n'
+- unsupported-fails: typeflag A with size 0 (manifest): rc=0 out='SKIP\tu.txt\t65\n'
+- unsupported-fails: typeflag Z with size 0 (list): rc=0 out='u.txt\t0\t90\n'
+- unsupported-fails: typeflag Z with size 0 (manifest): rc=0 out='SKIP\tu.txt\t90\n'
 - unsupported-fails: ustar magic with a GNU version (list): rc=0 out='m.txt\t1\t48\n'
 - unsupported-fails: ustar magic with a GNU version (manifest): rc=0 out='OK\tout/m.txt\t1\t120\n'
 - unsupported-fails: name ending in / with typeflag b'\x00' and data (list): rc=0 out='d/\t1\t0\n'
@@ -118,8 +140,8 @@ model with tarfile as `tarfile_agrees` in `tests/run_tests.py` says.
 - unsupported-fails: GNU header with the last byte of the prefix area set (manifest): rc=0 out='OK\tout/a.txt\t1\t120\n'
 - unsupported-fails: system tar, default format, long name (list): rc=0 out='d/\t0\t53\n././@LongLink\t127\t76\nd/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\t1\t48\n'
 - unsupported-fails: system tar, default format, long name (manifest): rc=0 out='SKIP\td/\t53\nSKIP\t././@LongLink\t76\nOK\tout/d/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\t1\t120\n'
-- unsupported-fails: system tar, incremental dump (times in bytes 345 to 368) (list): rc=0 out='15270715354/a.txt\t3\t48\n'
-- unsupported-fails: system tar, incremental dump (times in bytes 345 to 368) (manifest): rc=0 out='OK\tout/15270715354/a.txt\t3\t219\n'
+- unsupported-fails: system tar, incremental dump (times in bytes 345 to 368) (list): rc=0 out='15270716736/a.txt\t3\t48\n'
+- unsupported-fails: system tar, incremental dump (times in bytes 345 to 368) (manifest): rc=0 out='OK\tout/15270716736/a.txt\t3\t219\n'
 - unsupported-fails: system tar, sparse file (typeflag S, map in bytes 386 to 494) (list): rc=0 out='sparse\t3\t83\n'
 - unsupported-fails: system tar, sparse file (typeflag S, map in bytes 386 to 494) (manifest): rc=0 out='SKIP\tsparse\t83\n'
 - end-fails: one zero end block only (list): rc=0 out='a.txt\t7\t48\n'
