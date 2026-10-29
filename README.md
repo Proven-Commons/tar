@@ -2,7 +2,7 @@
 
 This repo reads a tar archive (ustar format) and works out where each regular file would be extracted, without writing anything to disk. Machine-checked proofs show that every `OK` line the command-line tool prints is the destination exactly as given, then plain names: none is empty, `.` or `..`, or holds `/`, a control character, or a Unicode line or paragraph separator. So no entry can climb out of the destination, and no name can forge a line or a field of the tool's output. The path gate, the extraction rule, and every line the tool prints for a parsed archive are proved to be exactly what this page and `SPEC.md` say. Parsing is tested on ten thousand random and mutated archives against a model of the format written from `SPEC.md`, which Python's `tarfile` checks on every unmutated archive both read, and on fixed archives against `tarfile` and GNU tar.
 
-It is the first Proven Commons project, and the subject of the org's [bar audit](https://github.com/Proven-Commons/mission/pull/1) of 2026-10-24, whose findings it fixes.
+It is the first Proven Commons project, and the subject of the org's [bar audit of 2026-10-24](https://github.com/Proven-Commons/mission/blob/main/reviews/tar/2026-10-24-bar-audit.md), whose findings it fixes. The org's home repo, [mission](https://github.com/Proven-Commons/mission), publishes the verified bar it is measured against.
 
 Status: in progress. The specification has not yet been approved by a reviewer apart from its author, so this is not verified.
 
@@ -94,7 +94,7 @@ python3 tests/run_tests.py
 - `Spec/Defs.lean`: the definitions the statements use, with checks of examples.
 - `Proofs.lean` and `Proofs/`: the proofs, under the same names.
 - `Main.lean`: the command-line tool.
-- `lakefile.toml`: the build. It names the package and its version, its libraries and executable, and the default targets, and sets nothing else.
+- `lakefile.toml`: the build. It names the package, its version and license, its libraries and executable, and the default targets, and sets nothing else.
 - `comparator.json`: which theorems `lake comparator` checks, and which axioms it allows.
 - `bar.toml`: the record for the bar check: status, authors, approvals, and where things are.
 - `SPEC.md`: the specification in plain words.
