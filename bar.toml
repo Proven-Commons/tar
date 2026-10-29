@@ -7,8 +7,9 @@ name = "tar"
 status = "in-progress"
 page = "README.md"
 # GitHub handles of everyone who wrote the specification. It was drafted
-# by Claude, an AI agent, for the org.
-spec_authors = ["claude"]
+# by Claude, an AI agent, for the org. zero-aska wrote the rule for the
+# end of an archive (tar#7) when carrying tar#4 to tar#6 forward.
+spec_authors = ["claude", "zero-aska"]
 # The program people run. A change to it voids the approval.
 entry_points = ["Main.lean"]
 
