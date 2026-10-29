@@ -7,8 +7,9 @@
   prints, and its extracted entries are exactly the output of
   `extractAll`. The proofs are in `Proofs/Contain.lean`.
 
-  Parsing and writing are covered by differential tests against
-  Python's `tarfile` module (see `tests/`), not by a proof.
+  Parsing, where an archive ends included, and writing are covered by
+  differential tests against Python's `tarfile` module and a model of
+  the format (see `tests/`), not by a proof.
 -/
 
 import TarPilot.Path
@@ -22,19 +23,33 @@ structure RawEntry where
   typeflag : Char
   data : ByteArray
 
+/-- Whether every byte of `data` from offset `off` to its end is zero. -/
+def zerosFrom (data : ByteArray) (off : Nat) : Bool :=
+  (data.extract off data.size).toList.all (· = 0)
+
 /-- Blocks of the archive, read from offset `off`. `fuel` counts down
     the blocks that can remain, which keeps the function total on
     hostile input: a size field that points past the end, or a block
     count that never reaches a full zero block, gives `none`. An
     archive that ends without its zero blocks is truncated, and a
-    truncated archive is rejected whole, not read as a clean prefix. -/
+    truncated archive is rejected whole, not read as a clean prefix.
+
+    Where a header is due, a block of zeros ends the archive. It must be
+    followed by at least one more block of zeros, and nothing but zero
+    bytes may follow it to the end of the input. A lone zero block, or
+    anything that is not zero after the end, makes the whole archive
+    fail to parse: GNU tar's `--ignore-zeros` and Python's `tarfile`
+    with `ignore_zeros=True` read on past zero blocks, so entries after
+    them, as in two archives joined with `cat`, would be extracted by
+    those readers and never seen here. -/
 def parseBlocks (data : ByteArray) (off : Nat) : Nat → Option (List RawEntry)
   | 0 => none
   | fuel + 1 =>
     if off + 512 > data.size then none
     else
       let block := data.extract off (off + 512)
-      if block.toList.all (· = 0) then some []
+      if block.toList.all (· = 0) then
+        if off + 1024 ≤ data.size ∧ zerosFrom data off then some [] else none
       else match parseBlock block with
         | none => none
         | some h =>
@@ -47,9 +62,12 @@ def parseBlocks (data : ByteArray) (off : Nat) : Nat → Option (List RawEntry)
               some ({ name := h.name, typeflag := h.typeflag,
                       data := data.extract dataOff (dataOff + h.size) } :: rest)
 
-/-- Parse a whole archive. -/
+/-- Parse a whole archive. Its length must be a whole number of 512-byte
+    blocks, and it must end as `parseBlocks` says: at least two blocks
+    of zeros, then only zero bytes. -/
 def parseArchive (data : ByteArray) : Option (List RawEntry) :=
-  parseBlocks data 0 (data.size / 512 + 1)
+  if data.size % 512 ≠ 0 then none
+  else parseBlocks data 0 (data.size / 512 + 1)
 
 /-- Regular files only: typeflag `0`, NUL, or `7` (a contiguous file,
     which POSIX lets a reader treat as regular, as Python's `tarfile`

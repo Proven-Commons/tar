@@ -8,7 +8,17 @@ Archives are bytes. Names are UTF-8 strings. The command-line tool reads a file 
 
 Scope: POSIX ustar, and GNU headers that carry nothing ustar does not. Anything outside the rules below makes the whole archive fail to parse, rather than be read in a way the pilot does not vouch for.
 
-An archive is a sequence of 512-byte header blocks and ends at a block of zeros. A header of a regular file is followed by its data, padded to a whole number of blocks. Links, devices, directories and FIFOs (types `1` to `6`) store no data, as POSIX says: the next header follows straight after, whatever their size field says, which is how GNU tar and Python's `tarfile` read them. A header is read only when all of these hold:
+An archive is a sequence of entries, then its end. Each entry starts with a 512-byte header block. A header of a regular file is followed by its data, padded to a whole number of blocks. Links, devices, directories and FIFOs (types `1` to `6`) store no data, as POSIX says: the next header follows straight after, whatever their size field says, which is how GNU tar and Python's `tarfile` read them.
+
+The end is a block of zeros where a header is due. It must be followed by at least one more block of zeros, and by nothing but zero bytes up to the end of the input, and the input's length must be a whole number of 512-byte blocks. So these fail to parse:
+
+- a single block of zeros followed by the end of the input, or by a block that is not all zeros, such as the header of another entry;
+- an entry, or any byte that is not zero, after the end, as when two archives are joined with `cat`;
+- an input whose length is not a multiple of 512, even when the bytes past the last whole block are zeros.
+
+GNU tar with `--ignore-zeros`, and Python's `tarfile` with `ignore_zeros=True`, read on past zero blocks and would extract entries after them. Without these rules the pilot would stop at the first zero block, and never list or vouch for those entries.
+
+A header is read only when all of these hold:
 
 - Bytes 257 to 264 are `ustar`, NUL, `00` (POSIX), or `ustar`, two spaces, NUL (GNU). A GNU header must have only zeros in bytes 345 to 499, where ustar keeps its name prefix and GNU keeps times, sparse maps, and volume offsets.
 - The checksum field (bytes 148 to 155) is the sum of all 512 bytes, as unsigned numbers, counting the checksum field itself as spaces. A sum over signed bytes, which some old tars wrote and GNU tar and `tarfile` accept, is not read.
@@ -17,7 +27,7 @@ An archive is a sequence of 512-byte header blocks and ends at a block of zeros.
 - The name field (bytes 0 to 99) and the prefix field (bytes 345 to 499), each up to its first NUL, are valid UTF-8. The entry's name is the name field, or the prefix, `/`, and the name field when the prefix is not empty.
 - A regular typeflag (NUL, `0`, `7`) with a name ending in `/`, which older archives use for a directory, has size zero: readers disagree on whether data follows such an entry.
 
-An archive fails to parse when a header is not read, when an entry's data runs past the end of the input, or when the input ends before a block of zeros. Then the tool prints nothing on standard output and exits with code 1, as it does when the file cannot be read.
+An archive fails to parse when a header is not read, when an entry's data runs past the end of the input, or when the archive does not end as above, which includes an input that stops before its end. Then the tool prints nothing on standard output and exits with code 1, as it does when the file cannot be read.
 
 ## The path gate
 
@@ -75,7 +85,7 @@ Each property is a theorem in `Spec.lean`, under the name given. The definitions
 | Resolved lexically, it is the resolved destination followed by those names, for entries or for an archive read from bytes. | `TarPilot.extractAll_resolves_inside`, `TarPilot.extractArchive_resolves_inside` |
 | Extracting an archive read from bytes is parsing it, then extracting the entries. | `TarPilot.extractArchive_eq` |
 
-The statements fix what extraction, the gate, and the `manifest` output do with the entries of a parsed archive. How bytes are parsed into entries, the `list` output, `create`, and the few lines of `Main.lean` that print the manifest and check the destination are fixed by the rules above and checked by the differential tests, not by a proof. No statement is about the lines `list` prints.
+The statements fix what extraction, the gate, and the `manifest` output do with the entries of a parsed archive. How bytes are parsed into entries, where an archive ends among them, the `list` output, `create`, and the few lines of `Main.lean` that print the manifest and check the destination are fixed by the rules above and checked by the differential tests, not by a proof. No statement is about the lines `list` prints.
 
 ## Oracle
 

@@ -14,14 +14,18 @@ It has two parts:
   written with tarfile, under eight destinations, and six destinations
   the tool must refuse; archives written by the tool and read back by
   tarfile; broken archives; the formats the pilot does not read (the
-  probes of the 2026-10-24 bar audit, and more of the same kinds); and
-  archives in formats it reads, GNU tar's own output among them, each
-  compared with tarfile under `list` and `manifest`.
+  probes of the 2026-10-24 bar audit, and more of the same kinds);
+  archives that do not end as SPEC.md says (a lone zero block, entries
+  or other bytes after the end, two archives joined, a length that is
+  not a whole number of blocks), which must fail to parse; archives
+  that do end as it says; and archives in formats it reads, GNU tar's
+  own output among them, each compared with tarfile under `list` and
+  `manifest`.
 - Random cases, from a recorded seed: archives written by tarfile in
   ustar, GNU and pax formats, with hostile names, every POSIX entry
   type, and random data, and the same kind of archives mutated (bytes
   flipped, header fields overwritten with or without a fixed checksum,
-  cut, or extended). For each, the tool's output must equal the
+  cut, extended, or changed where the archive ends). For each, the tool's output must equal the
   model's. Where the model and tarfile both read an unmutated archive,
   they must also agree on every entry, which checks the model against
   an independent reader.
@@ -263,6 +267,48 @@ def unsupported_archives(work):
         subprocess.run([gnu_tar, "cf", str(out), "--format=gnu", "--sparse", "sparse"],
                        cwd=src, check=True)
         yield "system tar, sparse file (typeflag S, map in bytes 386 to 494)", out.read_bytes()
+
+
+def entries_only(raw):
+    """An archive written by tarfile without its end: the headers and
+    data of its entries, up to its first zero block."""
+    return raw[:walk_headers(raw)[1]]
+
+
+def bad_end_archives():
+    """Archives that do not end as SPEC.md says: at least two blocks of
+    zeros where a header is due, then only zero bytes, in an input that
+    is a whole number of 512-byte blocks. Each must fail to parse.
+    (label, archive, whether it hides an entry): an archive hides an
+    entry when tarfile with `ignore_zeros=True`, which reads on past
+    zero blocks as GNU tar's `--ignore-zeros` does, reads `hidden.txt`
+    in it."""
+    a = entries_only(one_file(tarfile.USTAR_FORMAT, "a.txt", data=b"visible"))
+    full = one_file(tarfile.USTAR_FORMAT, "a.txt", data=b"visible")
+    hidden = one_file(tarfile.USTAR_FORMAT, "hidden.txt", data=b"hidden")
+    yield "one zero end block only", a + bytes(512), False
+    yield "a valid entry hidden after a single zero block", a + bytes(512) + hidden, True
+    yield "a nonzero byte after two zero end blocks", a + bytes(1024) + b"\x01" + bytes(511), False
+    yield "a nonzero byte in the last block of tarfile's end padding", full[:-1] + b"\x01", False
+    yield "two archives joined, the second after the first's end blocks", full + hidden, True
+    yield "two archives joined, the first with exactly two end blocks", (
+        a + bytes(1024) + hidden), True
+    yield "a length one byte past a whole number of blocks, the extra byte zero", (
+        full + b"\0"), False
+    yield "a length short of a whole number of blocks, the end blocks complete", (
+        a + bytes(1024 + 300)), False
+    yield "no zero block at all", a, False
+
+
+def good_end_archives():
+    """Archives that end as SPEC.md says. Each must read, as the model
+    reads it."""
+    a = entries_only(one_file(tarfile.USTAR_FORMAT, "a.txt", data=b"visible"))
+    yield "exactly two zero end blocks", a + bytes(1024)
+    yield "three zero end blocks", a + bytes(1536)
+    yield "tarfile's end, padded to a 10240-byte record", one_file(
+        tarfile.USTAR_FORMAT, "a.txt", data=b"visible")
+    yield "no entries: two zero blocks", bytes(1024)
 
 
 def readable_archives(work):
@@ -563,14 +609,20 @@ def model_header(block):
 
 def model_parse(data):
     """The entries (name, data, typeflag) of an archive, or None when the
-    whole archive must fail to parse."""
+    whole archive must fail to parse. The input must be a whole number
+    of 512-byte blocks. Where a header is due, a block of zeros ends the
+    archive: at least one more block of zeros must follow it, and only
+    zero bytes up to the end of the input."""
+    if len(data) % 512 != 0:
+        return None
     off, entries = 0, []
     while True:
         if off + 512 > len(data):
             return None
         block = data[off:off + 512]
         if block == bytes(512):
-            return entries
+            rest = data[off:]
+            return entries if len(rest) >= 1024 and rest == bytes(len(rest)) else None
         header = model_header(block)
         if header is None:
             return None
@@ -649,9 +701,11 @@ def random_archive(rng):
     return buf.getvalue()
 
 
-def header_offsets(data):
+def walk_headers(data):
     """Where the header blocks of an archive are, found by following the
-    size fields as a reader would, whether or not the headers are valid."""
+    size fields as a reader would, whether or not the headers are valid,
+    and where the next header would be after the last of them: the
+    first zero block, for an archive that ends as it should."""
     offs, off = [], 0
     while off + 512 <= len(data) and len(offs) < 64:
         block = data[off:off + 512]
@@ -660,7 +714,31 @@ def header_offsets(data):
         offs.append(off)
         size = model_octal(block[124:136]) or 0
         off += 512 + ((size + 511) // 512 * 512 if block[156] in REGULAR_CODES else 0)
-    return offs
+    return offs, off
+
+
+def header_offsets(data):
+    return walk_headers(data)[0]
+
+
+def mutate_end(rng, out):
+    """One change where the archive ends: keep one, two or three zero
+    blocks; put an archive after a single zero block, or after the whole
+    archive; set a byte after the end; or cut the end blocks short."""
+    end = min(walk_headers(bytes(out))[1], len(out))
+    kind = rng.randrange(6)
+    if kind == 0:
+        return out[:end] + bytes(512 * rng.choice([1, 2, 3]))
+    if kind == 1:
+        return out[:end] + bytes(512) + out
+    if kind == 2:
+        return out + out
+    if kind == 3 and end < len(out):
+        out[rng.randrange(end, len(out))] = rng.randrange(1, 256)
+        return out
+    if kind == 4:
+        return out[:end + rng.randrange(0, 1025)]
+    return out[:end] + bytes(rng.choice([1023, 1025, 1536]))
 
 
 def field_value(rng, field):
@@ -706,10 +784,11 @@ def set_checksum(block, how):
 def mutate(rng, data):
     """One to three random changes to an archive, most of them to a field
     of a header, with the checksum then made right, signed, seven digits,
-    or left stale."""
+    or left stale, and the others to bytes anywhere, to the length, or
+    to where the archive ends."""
     out = bytearray(data)
     for _ in range(rng.randrange(1, 4)):
-        kind = rng.randrange(8)
+        kind = rng.randrange(9)
         offs = header_offsets(bytes(out))
         if kind <= 3 and offs:
             base = rng.choice(offs)
@@ -731,6 +810,8 @@ def mutate(rng, data):
             del out[rng.randrange(len(out)):]
         elif kind == 6:
             out += rng.choice([bytes(512), bytes(1024), rng.randbytes(rng.randrange(1, 600))])
+        elif kind == 7:
+            out = bytearray(mutate_end(rng, out))
         else:
             base = rng.randrange(max(1, len(out) // 512)) * 512
             del out[base:base + 512]
@@ -954,6 +1035,44 @@ def main():
                 check(f"unsupported-fails: {label} ({cmd[0]})",
                       r.returncode == 1 and r.stdout == "",
                       f"rc={r.returncode} out={r.stdout[:200]!r}")
+            check(f"unsupported-model: {label}", model_parse(raw) is None,
+                  "the model reads it")
+
+        # 6b. Archives that do not end as SPEC.md says fail to parse, with
+        # exit code 1 and nothing on standard output, for both commands.
+        # The model must refuse them too. Where the case puts an entry
+        # after the zero blocks, tarfile with ignore_zeros=True must read
+        # it, so the case shows what a reader that reads on would extract.
+        bad_end = 0
+        for i, (label, raw, hides) in enumerate(bad_end_archives()):
+            bad_end += 1
+            path = td / f"bad-end{i}.tar"
+            path.write_bytes(raw)
+            for cmd in (["list", str(path)], ["manifest", str(path), "out"]):
+                r = run_lean(*cmd)
+                check(f"end-fails: {label} ({cmd[0]})",
+                      r.returncode == 1 and r.stdout == "",
+                      f"rc={r.returncode} out={r.stdout[:200]!r}")
+            check(f"end-model: {label}", model_parse(raw) is None, "the model reads it")
+            if hides:
+                with tarfile.open(fileobj=io.BytesIO(raw), ignore_zeros=True) as tf:
+                    names = tf.getnames()
+                check(f"end-hides: {label}", "hidden.txt" in names, f"tarfile reads {names}")
+
+        # 6c. Archives that end as SPEC.md says read as the model reads
+        # them, under both commands.
+        good_end = 0
+        for i, (label, raw) in enumerate(good_end_archives()):
+            good_end += 1
+            path = td / f"good-end{i}.tar"
+            path.write_bytes(raw)
+            check(f"end-model-reads: {label}", model_parse(raw) is not None, "the model refuses it")
+            for cmd in (["list", str(path)], ["manifest", str(path), "out"]):
+                r = run_lean(*cmd)
+                want = model_output(cmd[0], raw, "out")
+                check(f"end-reads: {label} ({cmd[0]})",
+                      (r.returncode, output_lines(r.stdout)) == want,
+                      f"rc={r.returncode} out={r.stdout[:200]!r} want={want}")
 
         # 7. Formats the pilot reads give what tarfile reads.
         readable = 0
@@ -976,9 +1095,9 @@ def main():
             check(f"readable-manifest: {label}", r.returncode == 0 and got == want,
                   f"rc={r.returncode} lean={got} expected={want}")
 
-        # Archive A, the tool's own archive, three broken ones, and the
-        # format probes.
-        fixed_archives = 1 + 1 + 3 + unsupported + readable
+        # Archive A, the tool's own archive, three broken ones, the
+        # format probes, and the end-of-archive cases.
+        fixed_archives = 1 + 1 + 3 + unsupported + readable + bad_end + good_end
 
         # 8. Random archives from the seed.
         stats = random_cases(args.seed, args.count, td)
@@ -1016,9 +1135,15 @@ def main():
         "- Broken inputs that must fail with exit code 1: truncated archive, "
         "random garbage, corrupted checksum",
         f"- Archives in formats the pilot does not read, which must fail with exit code 1 "
-        f"under `list` and `manifest`: {unsupported}",
+        f"under `list` and `manifest`, and which the model must refuse: {unsupported}",
         f"- Archives in other formats it reads, compared with tarfile under `list` and "
         f"`manifest`: {readable}",
+        f"- Archives that do not end as `SPEC.md` says (a lone zero block, an entry or a "
+        f"nonzero byte after the end, two archives joined, a length that is not a whole "
+        f"number of blocks), which must fail with exit code 1 under `list` and "
+        f"`manifest`: {bad_end}",
+        f"- Archives that end as it says (two or more zero blocks, then only zeros), "
+        f"compared with the model under `list` and `manifest`: {good_end}",
         f"- Failures: {len(failures)}",
         "",
         "How the fixed archives are compared with tarfile. tarfile drops the `/` at the",
