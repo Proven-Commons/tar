@@ -1,6 +1,6 @@
 /-
-  The theorems about the path gate, extraction, and what the
-  command-line tool prints.
+  The theorems about the path gate, extraction, and what
+  `tar-pilot manifest` prints.
 
   The statements use the definitions in `Spec/Defs.lean`: what a plain
   name and a control character are, the components of a path string,

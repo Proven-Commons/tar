@@ -3,7 +3,7 @@
 
   The extraction rule is the proved part, together with the path gate
   in `Path.lean`: `extractAll` only emits a path built as `dest ++ rel`,
-  where `rel` passed the gate. `manifest` is what the command-line tool
+  where `rel` passed the gate. `manifest` is what `tar-pilot manifest`
   prints, and its extracted entries are exactly the output of
   `extractAll`. The proofs are in `Proofs/Contain.lean`.
 
@@ -99,8 +99,8 @@ def Outcome.extracted : Outcome → Option (List String × ByteArray)
   | .extract path data => some (path, data)
   | _ => none
 
-/-- The outcome for every entry, in archive order: what the command-line
-    tool prints. -/
+/-- The outcome for every entry, in archive order: what
+    `tar-pilot manifest` prints. -/
 def manifest (dest : List String) (entries : List RawEntry) : List Outcome :=
   entries.map (outcome dest)
 
@@ -138,7 +138,7 @@ def escapeChar (c : Char) : List Char :=
 def escapeName (s : String) : String :=
   String.ofList (s.toList.flatMap escapeChar)
 
-/-- The line the command-line tool prints for one outcome. -/
+/-- The line `tar-pilot manifest` prints for one outcome. -/
 def Outcome.line : Outcome → String
   | .extract path data =>
     "OK\t" ++ joinPath path ++ "\t" ++ toString data.size ++ "\t" ++ toString (byteSum data)

@@ -1,6 +1,6 @@
 # tar: a tar extractor that cannot escape its destination
 
-This repo reads a tar archive (ustar format) and works out where each regular file would be extracted, without writing anything to disk. Machine-checked proofs show that every `OK` line the command-line tool prints is the destination exactly as given, then plain names: none is empty, `.` or `..`, or holds `/`, a control character, or a Unicode line or paragraph separator. So no entry can climb out of the destination, and no name can forge a line or a field of the tool's output. The path gate, the extraction rule, and every line the tool prints for a parsed archive are proved to be exactly what this page and `SPEC.md` say. Parsing is tested on ten thousand random and mutated archives against a model of the format written from `SPEC.md`, which Python's `tarfile` checks on every unmutated archive both read, and on fixed archives against `tarfile` and GNU tar.
+This repo reads a tar archive (ustar format) and works out where each regular file would be extracted, without writing anything to disk. Machine-checked proofs show that every `OK` line `tar-pilot manifest` prints is the destination exactly as given, then plain names: none is empty, `.` or `..`, or holds `/`, a control character, or a Unicode line or paragraph separator. So no entry can climb out of the destination, and no name can forge a line or a field of the manifest. The path gate, the extraction rule, and every line `manifest` prints for a parsed archive are proved to be exactly what this page and `SPEC.md` say. The lines `list` prints are not proved, nor is parsing. Parsing is tested on ten thousand random and mutated archives against a model of the format written from `SPEC.md`, which Python's `tarfile` checks on every unmutated archive both read, and on fixed archives against `tarfile` and GNU tar.
 
 It is the first Proven Commons project, and the subject of the org's [bar audit of 2026-10-24](https://github.com/Proven-Commons/mission/blob/main/reviews/tar/2026-10-24-bar-audit.md), whose findings it fixes. The org's home repo, [mission](https://github.com/Proven-Commons/mission), publishes the verified bar it is measured against.
 
@@ -32,7 +32,7 @@ The gate's rules: a name that starts with `/` is rejected. A name with a `..` co
 | Each entry is extracted, rejected, or skipped exactly as the rules say, an extracted entry at the destination followed by the gate's components and with its own data. | `TarPilot.manifest_eq` |
 | The entries the manifest extracts are exactly the extractor's output, in order. | `TarPilot.manifest_extracted` |
 | The lines `tar-pilot manifest <file> <dest>` prints are exactly `Spec.line` for each entry: `OK`, the path, the size and the byte sum; `REJECT` and the printed name; or `SKIP`, the printed name and the typeflag code. The path is the destination exactly as given, then the gate's components joined by `/`: `out/a/b` under `out`, and `out/a/b` or `/a/b` under `out/` or `/`, with no doubled `/`. | `TarPilot.manifest_lines_eq` |
-| Given a destination with no special character, as the tool requires, the only special characters in a line are its tab separators, and every line that starts with `OK` and a tab continues with the destination, then a non-empty list of plain names, then a tab. | `TarPilot.manifest_lines` |
+| Given a destination with no special character, as the tool requires, the only special characters in a `manifest` line are its tab separators, and every line that starts with `OK` and a tab continues with the destination, then a non-empty list of plain names, then a tab. | `TarPilot.manifest_lines` |
 | Every path the extractor emits is the destination followed by a non-empty list of plain names. | `TarPilot.extractAll_contained` |
 | Joined with `/`, such a path splits back into exactly the destination components and those names. | `TarPilot.extractAll_joined` |
 | Resolved lexically, it is the resolved destination followed by those names, for an archive given as entries or as bytes: no `..` in an archive reaches above the destination. The resolution reads a path as relative and drops a leading `/`, so for an absolute destination read both sides from `/`. | `TarPilot.extractAll_resolves_inside`, `TarPilot.extractArchive_resolves_inside` |
@@ -89,7 +89,7 @@ python3 tests/run_tests.py
 - `TarPilot/Path.lean`: the path gate.
 - `TarPilot/Octal.lean`: octal fields.
 - `TarPilot/Header.lean`: the 512-byte header: checksum, build, and parse.
-- `TarPilot/Archive.lean`: whole-archive parse and write, extraction, and the manifest and lines the tool prints.
+- `TarPilot/Archive.lean`: whole-archive parse and write, extraction, the manifest, and the lines `manifest` prints.
 - `Spec.lean`: the statements, with `sorry` for proofs. A reviewer approves this file.
 - `Spec/Defs.lean`: the definitions the statements use, with checks of examples.
 - `Proofs.lean` and `Proofs/`: the proofs, under the same names.

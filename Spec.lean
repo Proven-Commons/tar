@@ -9,9 +9,9 @@
   only.
 
   The statements are about the code in `TarPilot/`: the gate, the
-  extraction rule, the manifest, and the lines the command-line tool
-  prints. They do not cover how bytes are parsed into entries; the
-  differential tests do.
+  extraction rule, the manifest, and the lines `tar-pilot manifest`
+  prints. They do not cover how bytes are parsed into entries, or the
+  lines `tar-pilot list` prints; the differential tests do.
 -/
 
 import TarPilot

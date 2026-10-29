@@ -75,7 +75,7 @@ Each property is a theorem in `Spec.lean`, under the name given. The definitions
 | Resolved lexically, it is the resolved destination followed by those names, for entries or for an archive read from bytes. | `TarPilot.extractAll_resolves_inside`, `TarPilot.extractArchive_resolves_inside` |
 | Extracting an archive read from bytes is parsing it, then extracting the entries. | `TarPilot.extractArchive_eq` |
 
-The statements fix what extraction, the gate, and the `manifest` output do with the entries of a parsed archive. How bytes are parsed into entries, the `list` output, `create`, and the few lines of `Main.lean` that print the manifest and check the destination are fixed by the rules above and checked by the differential tests, not by a proof.
+The statements fix what extraction, the gate, and the `manifest` output do with the entries of a parsed archive. How bytes are parsed into entries, the `list` output, `create`, and the few lines of `Main.lean` that print the manifest and check the destination are fixed by the rules above and checked by the differential tests, not by a proof. No statement is about the lines `list` prints.
 
 ## Oracle
 
