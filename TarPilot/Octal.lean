@@ -14,9 +14,11 @@ def trimField (bs : List UInt8) : List UInt8 :=
   (noLead.reverse.dropWhile (fun b => b = 0 ∨ b = 32)).reverse
 
 /-- Parse an octal field. Fails on any byte that is not an octal digit
-    after trimming. An empty field parses as 0. -/
+    after trimming. A field with no digits parses as 0 when it is all
+    NUL, and fails when it holds a space, as GNU tar refuses it. -/
 def parseOctal (bs : List UInt8) : Option Nat :=
   let digits := trimField bs
+  if digits.isEmpty && bs.any (· == 32) then none else
   digits.foldl (fun acc b =>
     match acc with
     | none => none
