@@ -2,11 +2,19 @@
   Command line front end for the tar pilot.
 
     tar-pilot list <file.tar>
-      Print one line per entry: name, data size, typeflag code.
+      Print one line per entry: name (escaped as in `manifest`), data
+      size, typeflag code.
 
     tar-pilot manifest <file.tar> <dest>
       Print what extraction would do, in archive order, without
-      writing anything to disk:
+      writing anything to disk. Each line is `o.line` for an outcome `o`
+      of the proved `manifest` of the parsed archive, in order
+      (`Proofs/Contain.lean`, `manifest_lines`). Names in REJECT and
+      SKIP lines are escaped: a backslash as two, a control character
+      as `\x` and two hex digits, U+2028 and U+2029 as `\u2028` and
+      `\u2029`. A destination with a special character, or with U+FFFD
+      (which the runtime puts for bytes that are not UTF-8), is
+      refused:
         OK     <dest path> <size> <byte sum>   for an extracted file
         REJECT <name>                          for a regular file whose
                                                name fails the path gate
@@ -20,9 +28,6 @@ import TarPilot
 
 open TarPilot
 
-def byteSum (b : ByteArray) : Nat :=
-  b.toList.foldl (fun a x => a + x.toNat) 0
-
 def runList (file : String) : IO UInt32 := do
   let data ← IO.FS.readBinFile file
   match parseArchive data with
@@ -31,26 +36,24 @@ def runList (file : String) : IO UInt32 := do
     return 1
   | some entries =>
     for e in entries do
-      IO.println s!"{e.name}\t{e.data.size}\t{e.typeflag.toNat}"
+      IO.println s!"{escapeName e.name}\t{e.data.size}\t{e.typeflag.toNat}"
     return 0
 
 def runManifest (file dest : String) : IO UInt32 := do
+  if dest.toList.any isSpecialChar then
+    IO.eprintln "error: the destination holds a control character or a line separator"
+    return 2
+  if dest.toList.contains '\uFFFD' then
+    IO.eprintln "error: the destination is not valid UTF-8, or holds U+FFFD"
+    return 2
   let data ← IO.FS.readBinFile file
   match parseArchive data with
   | none =>
     IO.eprintln s!"error: cannot parse {file} as a ustar archive"
     return 1
   | some entries =>
-    let destCs := if dest = "" then [] else dest.splitOn "/"
-    for e in entries do
-      if isRegular e then
-        match gate e.name with
-        | none => IO.println s!"REJECT\t{e.name}"
-        | some rel =>
-          let path := String.intercalate "/" (destCs ++ rel)
-          IO.println s!"OK\t{path}\t{e.data.size}\t{byteSum e.data}"
-      else
-        IO.println s!"SKIP\t{e.name}\t{e.typeflag.toNat}"
+    for o in manifest (destComponents dest) entries do
+      IO.println o.line
     return 0
 
 def runCreate (out : String) (files : List String) : IO UInt32 := do
