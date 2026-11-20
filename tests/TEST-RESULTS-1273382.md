@@ -3,16 +3,17 @@
 Run by `tests/run_tests.py --tool 1273382` against Python's `tarfile` module.
 The tool was built from commit 1273382, not from this checkout. The axiom
 check reads this checkout's proofs, not the tool, so it is left out.
-Lean: Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release). Python: 3.13.17. System tar: tar (GNU tar) 1.35.
+Lean: Lean (version 4.35.0, x86_64-unknown-linux-gnu, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc, Release). Python: 3.12.3. System tar: tar (GNU tar) 1.35.
 
-- Checks run: 107, all on the tool
-- Failures: 68
+- Checks run: 133, all on the tool
+- Failures: 86
 - Archive A entries compared (list and manifest): 23
 - Manifest outcome on archive A: 10 extracted, 9 rejected by the path gate, 4 skipped as non-regular
 - Files written by the Lean `create` command and read back by Python: 3
 - Broken inputs that must fail with exit code 1: truncated archive, random garbage, corrupted checksum
 - Archives in formats the pilot does not read, which must fail with exit code 1 under `list` and `manifest`: 29
-- Archives in other formats it reads, compared with tarfile under `list` and `manifest`: 13
+- Archives that break the end rule (two zero blocks, only zero bytes after the first, length a multiple of 512), including concatenated archives, which must fail with exit code 1 and empty standard output under `list` and `manifest`: 10
+- Archives in other formats it reads, compared with tarfile under `list` and `manifest`: 16
 
 How the output is compared with tarfile. tarfile drops the `/` at the end of a
 directory name, so directory names in `list` and names in `SKIP` lines are
@@ -73,10 +74,28 @@ compared as printed.
 - unsupported-fails: size field of spaces (manifest): rc=0 out='OK\tout/f\t0\t0\n'
 - unsupported-fails: system tar, default format, long name (list): rc=0 out='d/\t0\t53\n././@LongLink\t127\t76\nd/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\t1\t48\n'
 - unsupported-fails: system tar, default format, long name (manifest): rc=0 out='SKIP\td/\t53\nSKIP\t././@LongLink\t76\nOK\tout/d/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\t1\t120\n'
-- unsupported-fails: system tar, incremental dump (times in bytes 345 to 368) (list): rc=0 out='15267725440/a.txt\t3\t48\n'
-- unsupported-fails: system tar, incremental dump (times in bytes 345 to 368) (manifest): rc=0 out='OK\tout/15267725440/a.txt\t3\t219\n'
+- unsupported-fails: system tar, incremental dump (times in bytes 345 to 368) (list): rc=0 out='15277760162/a.txt\t3\t48\n'
+- unsupported-fails: system tar, incremental dump (times in bytes 345 to 368) (manifest): rc=0 out='OK\tout/15277760162/a.txt\t3\t219\n'
 - unsupported-fails: system tar, sparse file (typeflag S, map in bytes 386 to 494) (list): rc=0 out='sparse\t3\t83\n'
 - unsupported-fails: system tar, sparse file (typeflag S, map in bytes 386 to 494) (manifest): rc=0 out='SKIP\tsparse\t83\n'
+- end-rule-fails: one zero end block (list): rc=0 out='a.txt\t1\t48\n'
+- end-rule-fails: one zero end block (manifest): rc=0 out='OK\tout/a.txt\t1\t97\n'
+- end-rule-fails: only a single zero block (list): rc=0 out=''
+- end-rule-fails: only a single zero block (manifest): rc=0 out=''
+- end-rule-fails: length not a multiple of 512 (list): rc=0 out='a.txt\t1\t48\n'
+- end-rule-fails: length not a multiple of 512 (manifest): rc=0 out='OK\tout/a.txt\t1\t97\n'
+- end-rule-fails: one extra byte after two zero blocks (list): rc=0 out='a.txt\t1\t48\n'
+- end-rule-fails: one extra byte after two zero blocks (manifest): rc=0 out='OK\tout/a.txt\t1\t97\n'
+- end-rule-fails: second end block is not all zeros (list): rc=0 out='a.txt\t1\t48\n'
+- end-rule-fails: second end block is not all zeros (manifest): rc=0 out='OK\tout/a.txt\t1\t97\n'
+- end-rule-fails: nonzero padding after two zero blocks (list): rc=0 out='a.txt\t1\t48\n'
+- end-rule-fails: nonzero padding after two zero blocks (manifest): rc=0 out='OK\tout/a.txt\t1\t97\n'
+- end-rule-fails: concatenated archives (list): rc=0 out='a.txt\t1\t48\n'
+- end-rule-fails: concatenated archives (manifest): rc=0 out='OK\tout/a.txt\t1\t97\n'
+- end-rule-fails: concatenated archives with exactly two end blocks (list): rc=0 out='a.txt\t1\t48\n'
+- end-rule-fails: concatenated archives with exactly two end blocks (manifest): rc=0 out='OK\tout/a.txt\t1\t97\n'
+- end-rule-fails: entry hidden after one zero block (list): rc=0 out='a.txt\t1\t48\n'
+- end-rule-fails: entry hidden after one zero block (manifest): rc=0 out='OK\tout/a.txt\t1\t97\n'
 - readable-manifest: contiguous file (typeflag 7): rc=0 lean=['SKIP\tcontig.bin\t55'] expected=['OK\tout/contig.bin\t10\t1104']
 - readable-manifest: names ending in / with typeflags NUL and 0, read as directories: rc=0 lean=['OK\tout/olddir\t0\t0', 'OK\tout/olddir/f.txt\t3\t319', 'OK\tout/slashdir\t0\t0'] expected=['SKIP\tolddir\t53', 'OK\tout/olddir/f.txt\t3\t319', 'SKIP\tslashdir\t48']
 - readable-list: typeflag 1 with a size field, then two files: rc=0 lean=[('node', 1024, 49), ('b.txt', 1, 48)] expected=[('node', 0, 49), ('hidden.txt', 6, 48), ('b.txt', 1, 48)]

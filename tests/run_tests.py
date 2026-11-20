@@ -219,9 +219,48 @@ def unsupported_archives(work):
         yield "system tar, sparse file (typeflag S, map in bytes 386 to 494)", out.read_bytes()
 
 
+def first_zero_block(raw):
+    """Offset of the first all-zero 512-byte block, or None."""
+    for off in range(0, len(raw) - len(raw) % 512, 512):
+        if raw[off:off + 512] == bytes(512):
+            return off
+    return None
+
+
+def end_rule_archives():
+    """Archives that break the end rule. Each must fail to parse, with
+    nothing on standard output. The rule is two zero blocks, only zero
+    bytes after the first of them, and a length that is a multiple of
+    512. A reader that stopped at the first zero block would list only
+    the prefix, including when a second archive is concatenated on."""
+    a = one_file(tarfile.USTAR_FORMAT, "a.txt", data=b"a")
+    b = one_file(tarfile.USTAR_FORMAT, "b.txt", data=b"b")
+    end_a, end_b = first_zero_block(a), first_zero_block(b)
+    two_a = a[:end_a + 1024]
+    two_b = b[:end_b + 1024]
+    yield "one zero end block", a[:end_a + 512]
+    yield "no zero end blocks", a[:end_a]
+    yield "only a single zero block", bytes(512)
+    yield "length not a multiple of 512", two_a[:-1]
+    yield "one extra byte after two zero blocks", two_a + b"\x00"
+    bad = bytearray(two_a)
+    bad[-1] = 1
+    yield "second end block is not all zeros", bytes(bad)
+    yield "nonzero padding after two zero blocks", two_a + bytes(511) + b"\x01"
+    yield "concatenated archives", a + b
+    yield "concatenated archives with exactly two end blocks", two_a + two_b
+    yield "entry hidden after one zero block", a[:end_a + 512] + two_b
+
+
 def readable_archives(work):
     """Archives in formats the pilot reads. Each must read as Python's
     tarfile reads it."""
+    # Two zero blocks are enough. Further zero blocks are padding.
+    ended = one_file(tarfile.USTAR_FORMAT, "ended.txt", data=b"end")
+    end = first_zero_block(ended)
+    yield "exactly two zero blocks", ended[:end + 1024]
+    yield "two zero blocks plus extra zero padding", ended[:end + 1024] + bytes(1024)
+    yield "empty archive of two zero blocks", bytes(1024)
     yield "contiguous file (typeflag 7)", one_file(
         tarfile.USTAR_FORMAT, "contig.bin", data=b"contiguous", typ=tarfile.CONTTYPE)
     buf = io.BytesIO()
@@ -594,7 +633,22 @@ def main():
                       r.returncode == 1 and r.stdout == "",
                       f"rc={r.returncode} out={r.stdout[:200]!r}")
 
-        # 7. Formats the pilot reads give what tarfile reads.
+        # 7. The end rule: two zero blocks, only zero bytes after the
+        # first of them, and a length that is a multiple of 512. Each
+        # failure prints nothing, under both commands. Concatenated
+        # archives are in this set.
+        end_rule = 0
+        for i, (label, raw) in enumerate(end_rule_archives()):
+            end_rule += 1
+            path = td / f"end{i}.tar"
+            path.write_bytes(raw)
+            for cmd in (["list", str(path)], ["manifest", str(path), "out"]):
+                r = run_lean(*cmd)
+                check(f"end-rule-fails: {label} ({cmd[0]})",
+                      r.returncode == 1 and r.stdout == "",
+                      f"rc={r.returncode} out={r.stdout[:200]!r}")
+
+        # 8. Formats the pilot reads give what tarfile reads.
         readable = 0
         for i, (label, raw) in enumerate(readable_archives(td)):
             readable += 1
@@ -666,6 +720,10 @@ def main():
         "random garbage, corrupted checksum",
         f"- Archives in formats the pilot does not read, which must fail with exit code 1 "
         f"under `list` and `manifest`: {unsupported}",
+        f"- Archives that break the end rule (two zero blocks, only zero bytes after "
+        f"the first, length a multiple of 512), including concatenated archives, which "
+        f"must fail with exit code 1 and empty standard output under `list` and "
+        f"`manifest`: {end_rule}",
         f"- Archives in other formats it reads, compared with tarfile under `list` and "
         f"`manifest`: {readable}",
         "",
