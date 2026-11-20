@@ -1,0 +1,22 @@
+{
+  "challenge_module": "Spec",
+  "solution_module": "Proofs",
+  "theorem_names": [
+    "TarPilot.gate_eq",
+    "TarPilot.gate_plain",
+    "TarPilot.manifest_eq",
+    "TarPilot.extractAll_contained",
+    "TarPilot.extractAll_joined",
+    "TarPilot.extractAll_resolves_inside",
+    "TarPilot.extractArchive_resolves_inside",
+    "TarPilot.manifest_extracted",
+    "TarPilot.manifest_lines",
+    "TarPilot.manifest_lines_eq",
+    "TarPilot.extractArchive_eq"
+  ],
+  "permitted_axioms": [
+    "propext",
+    "Quot.sound",
+    "Classical.choice"
+  ]
+}

@@ -1,17 +1,32 @@
 # Planted bugs
 
-Written by `python3 tests/planted_bugs.py`. Each row is one small change to the
-proofs or to the axiom check, made in a copy. `lake build` ran on the copy, then
-`tests/run_tests.py`. A fault is caught when the tests report failures.
+Written by `python3 tests/planted_bugs.py --bar <mission>/bar/check.py`.
 
-| Fault | Files | `lake build` | Failures | Failing checks |
-|-------|-------|--------------|----------|----------------|
-| sorry in a helper lemma (resolve_plain) | `Proofs/Contain.lean` | passes, warns of a `sorry` | 2 | axioms-TarPilot.extractAll_resolves_inside, axioms-TarPilot.extractArchive_resolves_inside |
-| axiom cheat : False behind a helper lemma (resolve_plain) | `Proofs/Contain.lean` | passes | 2 | axioms-TarPilot.extractAll_resolves_inside, axioms-TarPilot.extractArchive_resolves_inside |
-| extra unlisted theorem, proved by sorry | `Proofs/Contain.lean`, `TarPilot/Verify.lean` | passes, warns of a `sorry` | 2 | axioms-names, axioms-TarPilot.extra_claim |
-| extra unlisted theorem, proved | `Proofs/Contain.lean`, `TarPilot/Verify.lean` | passes | 1 | axioms-names |
-| listed theorem left out of Verify.lean (manifest_lines) | `TarPilot/Verify.lean` | passes | 1 | axioms-names |
-| sorry in Spec.escape_noSpecial | `Spec/Defs.lean` | passes, warns of a `sorry` | 2 | axioms-Spec.escape_noSpecial, axioms-TarPilot.manifest_lines |
+Each row is one small change to the proofs, the statements, or the list of
+theorems checked, made in a copy. On each copy these ran, in this order:
+
+- `lake build`;
+- `lake comparator --paranoid`;
+- `#print axioms` for each theorem `comparator.json` lists;
+- `tests/run_tests.py --count 1000`;
+- mission's `bar/check.py --offline`.
+
+The first row is the copy left as it is. A fault is caught when the comparator
+rejects it, the tests report failures, or the bar check gives an item another
+status than it gives the unchanged copy.
+
+On the unchanged copy, the bar check gives: item 1 OPEN, item 2 PASS, item 3 PASS, item 4 PASS, item 5 PASS, item 6 PASS, item 7 SKIP.
+
+| Fault | Files | `lake build` | `lake comparator --paranoid` | Axioms beyond the three | Test failures | Bar check, where it differs | Caught |
+|-------|-------|--------------|------------------------------|-------------------------|---------------|-----------------------------|--------|
+| none: the copy as it is | none | passes | accepts | none | 0 | the same | (none planted) |
+| sorry in a helper lemma (resolve_plain) | `Proofs/Contain.lean` | passes, warns of a `sorry` in `Proofs/Contain.lean` | rejects: error: Illegal axiom detected: 'sorryAx' | TarPilot.extractAll_resolves_inside: sorryAx; TarPilot.extractArchive_resolves_inside: sorryAx | 0 | item 3: PASS to OPEN: `lake comparator --paranoid`: a proof is still `sorry`, which an in-progress project may have; item 4: PASS to OPEN: unfinished proofs, which an in-progress project may have: Proofs/Contain.lean:174 sorry | yes |
+| axiom cheat : False behind a helper lemma (resolve_plain) | `Proofs/Contain.lean` | passes | rejects: error: Illegal axiom detected: 'TarPilot.Contain.cheat' | TarPilot.extractAll_resolves_inside: TarPilot.Contain.cheat; TarPilot.extractArchive_resolves_inside: TarPilot.Contain.cheat | 0 | item 3: PASS to FAIL: `lake comparator --paranoid` exited 1: ... error: Illegal axiom detected: 'TarPilot.Contain.cheat'; item 4: PASS to FAIL: forbidden features: Proofs/Contain.lean:172 axiom | yes |
+| extra theorem the page does not claim, proved by sorry | `Proofs/Contain.lean`, `Spec.lean`, `comparator.json` | passes, warns of a `sorry` in `Proofs/Contain.lean` | rejects: error: Illegal axiom detected: 'sorryAx' | TarPilot.extra_claim: sorryAx | 0 | item 2: PASS to OPEN: 'What is proved' does not name: TarPilot.extra_claim; item 3: PASS to OPEN: `lake comparator --paranoid`: a proof is still `sorry`, which an in-progress project may have; item 4: PASS to OPEN: unfinished proofs, which an in-progress project may have: Proofs/Contain.lean:537 sorry | yes |
+| extra theorem the page does not claim, proved | `Proofs/Contain.lean`, `Spec.lean`, `comparator.json` | passes | accepts | none | 0 | item 2: PASS to OPEN: 'What is proved' does not name: TarPilot.extra_claim | yes |
+| theorem of Spec.lean left out of comparator.json (manifest_lines) | `comparator.json` | passes | accepts | none | 0 | item 3: PASS to FAIL: `lake comparator --paranoid` passes, but comparator.json does not name these theorems of the challenge file: TarPilot.manifest_lines | yes |
+| sorry in Spec.escape_noSpecial | `Spec/Defs.lean` | passes, warns of a `sorry` in `Spec/Defs.lean` | rejects: error: Illegal axiom detected: 'sorryAx' | TarPilot.manifest_lines: sorryAx | 0 | item 3: PASS to OPEN: `lake comparator --paranoid`: a proof is still `sorry`, which an in-progress project may have; item 4: PASS to OPEN: unfinished proofs, which an in-progress project may have: Spec/Defs.lean:123 sorry | yes |
+| axiom cheat : False behind Spec.escape_noSpecial | `Spec/Defs.lean` | passes | rejects: error: Illegal axiom detected: 'Spec.cheat' | TarPilot.manifest_lines: Spec.cheat | 0 | item 3: PASS to FAIL: `lake comparator --paranoid` exited 1: ... error: Illegal axiom detected: 'Spec.cheat'; item 4: PASS to FAIL: forbidden features: Spec/Defs.lean:119 axiom | yes |
 
 ## The changes
 
@@ -57,7 +72,21 @@ proofs or to the axiom check, made in a copy. `lake build` ran on the copy, then
 +   exact cheat.elim
 ```
 
-**extra unlisted theorem, proved by sorry** in `Proofs/Contain.lean`:
+**extra theorem the page does not claim, proved by sorry** in `Spec.lean`:
+
+```
+- (parseArchive data).map (extractAll dest) := sorry
+- 
+- end TarPilot
++ (parseArchive data).map (extractAll dest) := sorry
++ 
++ /-- Not a claim of the page. -/
++ theorem extra_claim : gate ".." = none := sorry
++ 
++ end TarPilot
+```
+
+**extra theorem the page does not claim, proved by sorry** in `Proofs/Contain.lean`:
 
 ```
 - (extractAll dest) := rfl
@@ -70,15 +99,31 @@ proofs or to the axiom check, made in a copy. `lake build` ran on the copy, then
 + theorem TarPilot.extra_claim : TarPilot.gate ".." = none := sorry
 ```
 
-**extra unlisted theorem, proved by sorry** in `TarPilot/Verify.lean`:
+**extra theorem the page does not claim, proved by sorry** in `comparator.json`:
 
 ```
-- #print axioms Spec.escape_noSpecial
-+ #print axioms Spec.escape_noSpecial
-+ #print axioms TarPilot.extra_claim
+-     "TarPilot.extractArchive_eq"
+-   ],
++     "TarPilot.extractArchive_eq",
++     "TarPilot.extra_claim"
++   ],
 ```
 
-**extra unlisted theorem, proved** in `Proofs/Contain.lean`:
+**extra theorem the page does not claim, proved** in `Spec.lean`:
+
+```
+- (parseArchive data).map (extractAll dest) := sorry
+- 
+- end TarPilot
++ (parseArchive data).map (extractAll dest) := sorry
++ 
++ /-- Not a claim of the page. -/
++ theorem extra_claim : gate ".." = none := sorry
++ 
++ end TarPilot
+```
+
+**extra theorem the page does not claim, proved** in `Proofs/Contain.lean`:
 
 ```
 - (extractAll dest) := rfl
@@ -88,21 +133,26 @@ proofs or to the axiom check, made in a copy. `lake build` ran on the copy, then
 + 
 + end TarPilot
 + 
-+ theorem TarPilot.extra_claim : True := trivial
++ theorem TarPilot.extra_claim : TarPilot.gate ".." = none := by
++   rw [TarPilot.gate_eq]
++   simp only [Spec.cleanName, Spec.pathComponents, String.toList_split_char]
++   decide
 ```
 
-**extra unlisted theorem, proved** in `TarPilot/Verify.lean`:
+**extra theorem the page does not claim, proved** in `comparator.json`:
 
 ```
-- #print axioms Spec.escape_noSpecial
-+ #print axioms Spec.escape_noSpecial
-+ #print axioms TarPilot.extra_claim
+-     "TarPilot.extractArchive_eq"
+-   ],
++     "TarPilot.extractArchive_eq",
++     "TarPilot.extra_claim"
++   ],
 ```
 
-**listed theorem left out of Verify.lean (manifest_lines)** in `TarPilot/Verify.lean`:
+**theorem of Spec.lean left out of comparator.json (manifest_lines)** in `comparator.json`:
 
 ```
-- #print axioms TarPilot.manifest_lines
+-     "TarPilot.manifest_lines",
 + 
 ```
 
@@ -118,6 +168,28 @@ proofs or to the axiom check, made in a copy. `lake build` ran on the copy, then
 -   exact escapeChar_noSpecial c ch hc
 +     ∀ ch ∈ (escape s).toList, isSpecial ch = false := by
 +   sorry
+```
+
+**axiom cheat : False behind Spec.escape_noSpecial** in `Spec/Defs.lean`:
+
+```
+- /-- A printed name holds no special character, so it cannot break a line
+-     or a field of the tool's output. -/
+- theorem escape_noSpecial (s : String) :
+-     ∀ ch ∈ (escape s).toList, isSpecial ch = false := by
+-   intro ch hch
+-   unfold escape at hch
+-   rw [String.toList_join, List.mem_flatMap] at hch
+-   obtain ⟨t, ht, hc⟩ := hch
+-   obtain ⟨c, _, rfl⟩ := List.mem_map.mp ht
+-   exact escapeChar_noSpecial c ch hc
++ axiom cheat : False
++ 
++ /-- A printed name holds no special character, so it cannot break a line
++     or a field of the tool's output. -/
++ theorem escape_noSpecial (s : String) :
++     ∀ ch ∈ (escape s).toList, isSpecial ch = false := by
++   exact cheat.elim
 ```
 
 ## Not here
