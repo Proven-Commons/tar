@@ -1,8 +1,8 @@
 # tar: a tar extractor that cannot escape its destination
 
-This repo reads a tar archive (ustar format) and extracts regular files into an in-memory list of paths and file contents. Every path it emits is the destination followed by a cleaned relative path. Machine-checked proofs show that every `OK` line the command-line tool prints is the destination exactly as given, then plain names: none is empty, `.` or `..`, or holds `/`, a control character, or a Unicode line or paragraph separator. So no entry can climb out of the destination, and no name can forge a line or a field of the tool's output. Each line the tool prints is proved to be exactly the line `Spec/Defs.lean` writes out from the rules.
+This repo reads a tar archive (ustar format) and extracts regular files into an in-memory list of paths and file contents. Every path it emits is the destination followed by a cleaned relative path. Machine-checked proofs show that every `OK` line the command-line tool prints is the destination exactly as given, then plain names: none is empty, `.` or `..`, or holds `/`, a control character, or a Unicode line or paragraph separator. So no entry can climb out of the destination, and no name can forge a line or a field of the tool's output. Every line `manifest` prints is proved to be exactly the line `Spec/Defs.lean` writes out from the rules.
 
-It is the first Proven Commons project. Status: built, not yet verified. The org's [bar audit](https://github.com/Proven-Commons/mission/pull/1) lists what is still missing against the verified bar in [mission](https://github.com/Proven-Commons/mission).
+It is the first Proven Commons project. The org's home repo, [mission](https://github.com/Proven-Commons/mission), publishes the verified bar it is measured against. Status: built, not yet verified. The [bar audit of 2026-10-24](https://github.com/Proven-Commons/mission/blob/main/reviews/tar/2026-10-24-bar-audit.md) found that the bar is not yet met, and lists the fixes.
 
 ## Run it
 
