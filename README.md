@@ -1,6 +1,6 @@
 # tar: a tar extractor that cannot escape its destination
 
-This repo reads a tar archive (ustar format) and works out where each regular file would be extracted, without writing anything to disk. Machine-checked proofs show that every `OK` line the command-line tool prints is the destination exactly as given, then plain names: none is empty, `.` or `..`, or holds `/`, a control character, or a Unicode line or paragraph separator. So no entry can climb out of the destination, and no name can forge a line or a field of the tool's output. The path gate, the extraction rule, and every line the tool prints for a parsed archive are proved to be exactly what this page and `SPEC.md` say. Parsing is tested on ten thousand random and mutated archives against a model of the format written from `SPEC.md`, which Python's `tarfile` checks on every unmutated archive both read, and on fixed archives against `tarfile` and GNU tar.
+This repo reads a tar archive (ustar format) and works out where each regular file would be extracted, without writing anything to disk. Machine-checked proofs show that every `OK` line the command-line tool prints is the destination exactly as given, then plain names: none is empty, `.` or `..`, or holds `/`, a control character, or a Unicode line or paragraph separator. So no entry can climb out of the destination, and no name can forge a line or a field of the tool's output. The path gate, the extraction rule, and every line `manifest` prints for a parsed archive are proved to be exactly what this page and `SPEC.md` say. Parsing is tested on ten thousand random and mutated archives against a model of the format written from `SPEC.md`, which Python's `tarfile` checks on every unmutated archive both read, and on fixed archives against `tarfile` and GNU tar.
 
 It is the first Proven Commons project, and the subject of the org's [bar audit](https://github.com/Proven-Commons/mission/pull/1) of 2026-10-24, whose findings it fixes.
 
@@ -51,6 +51,7 @@ The gate's rules: a name that starts with `/` is rejected. A name with a `..` co
   - a regular typeflag with a name ending in `/`, which reads as a directory, and a size that is not zero, where readers disagree on whether data follows;
   - a checksum over signed bytes, which some old tars wrote and GNU tar and `tarfile` accept;
   - any other magic, such as an old Unix V7 header.
+- The end of the archive, as `SPEC.md` states it. The length is a multiple of 512. The archive ends with two zero blocks, and every byte after the first of them is zero. One zero block, a partial block, nonzero padding, and a second archive concatenated after the end are rejected whole, with nothing printed. Extra blocks of zeros are padding and are read. This is tested, not proved.
 - Writing to disk. Extraction works on an in-memory list, so the step from a proved path to a safe write on a real filesystem (races, symlinks already on disk, a symlinked destination) is outside this project for now. The proofs resolve paths lexically, as POSIX does when no component is a symlink.
 - The destination itself. The proofs say where a path lands relative to the destination, not whether the destination is a safe place to write. The destination is the command-line argument as the Lean runtime decodes it from UTF-8.
 
@@ -80,7 +81,7 @@ python3 tests/run_tests.py
 
 `python3 tests/compare_old.py --new 1273382` builds the tool as it was before the containment change (commit 7517a86) and the tool of that change (commit 1273382), and compares the two on 3,000 random archives under five destinations, from a recorded seed. Once the new escapes in names are undone, the output must be the same. It writes `tests/COMPARE-OLD.md`. Without `--new`, it compares this checkout's tool, and runs differ on purpose: some random names end in `/` with a regular typeflag, and this tool skips such an entry, or refuses the archive when the entry has data.
 
-`python3 tests/run_tests.py --tool 1273382` runs the same checks against the tool of the containment change (commit 1273382), from before the parser changes, and writes `tests/TEST-RESULTS-1273382.md`: 10,377 of the 23,269 checks fail there. The 3,134 checks of the model against `tarfile` do not run the tool, so they pass.
+`python3 tests/run_tests.py --tool 1273382` runs the same checks against the tool of the containment change (commit 1273382), from before the parser changes, and writes `tests/TEST-RESULTS-1273382.md`: 10,999 of the 23,311 checks fail there. The 3,134 checks of the model against `tarfile` do not run the tool, so they pass. Nine of the ten end-rule archives fail there, because that tool returns at the first zero block.
 
 `python3 tests/planted_bugs.py --bar <mission>/bar/check.py` plants seven faults, one at a time in a copy: a `sorry` and an axiom behind a helper lemma of the proofs; an extra theorem in `Spec.lean` and `comparator.json` that the page does not claim, proved by `sorry`, and proved; a statement of `Spec.lean` left out of `comparator.json`; and a `sorry` and an axiom in `Spec.escape_noSpecial`. Here `<mission>` is a checkout of Proven-Commons/mission at the commit `.github/workflows/bar.yml` pins. On each copy the script runs `lake build`, `lake comparator --paranoid`, the tests and the bar check, and it writes `tests/PLANTED-BUGS.md`. `lake build` passes on all seven, and the tests report no failures, since they check the tool. The comparator rejects the five with a `sorry` or an axiom. It checks only the theorems `comparator.json` lists, so it accepts the other two. The bar check catches those, in item 2 and in item 3.
 
@@ -94,7 +95,7 @@ python3 tests/run_tests.py
 - `Spec/Defs.lean`: the definitions the statements use, with checks of examples.
 - `Proofs.lean` and `Proofs/`: the proofs, under the same names.
 - `Main.lean`: the command-line tool.
-- `lakefile.toml`: the build. It names the package and its version, its libraries and executable, and the default targets, and sets nothing else.
+- `lakefile.toml`: the build. It names the package and its version, its Apache-2.0 license, its libraries and executable, and the default targets.
 - `comparator.json`: which theorems `lake comparator` checks, and which axioms it allows.
 - `bar.toml`: the record for the bar check: status, authors, approvals, and where things are.
 - `SPEC.md`: the specification in plain words.

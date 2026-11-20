@@ -8,7 +8,7 @@ Archives are bytes. Names are UTF-8 strings. The command-line tool reads a file 
 
 Scope: POSIX ustar, and GNU headers that carry nothing ustar does not. Anything outside the rules below makes the whole archive fail to parse, rather than be read in a way the pilot does not vouch for.
 
-An archive is a sequence of 512-byte header blocks and ends at a block of zeros. A header of a regular file is followed by its data, padded to a whole number of blocks. Links, devices, directories and FIFOs (types `1` to `6`) store no data, as POSIX says: the next header follows straight after, whatever their size field says, which is how GNU tar and Python's `tarfile` read them. A header is read only when all of these hold:
+An archive is a sequence of 512-byte blocks, and its length is a multiple of 512. It ends with two blocks of zeros, and every byte after the first of those blocks is zero. One zero block is not an end. Nonzero padding, or a second archive concatenated after the end, is not zero padding. Extra blocks of zeros are padding and are read. A header of a regular file is followed by its data, padded to a whole number of blocks. Links, devices, directories and FIFOs (types `1` to `6`) store no data, as POSIX says: the next header follows straight after, whatever their size field says, which is how GNU tar and Python's `tarfile` read them. A header is read only when all of these hold:
 
 - Bytes 257 to 264 are `ustar`, NUL, `00` (POSIX), or `ustar`, two spaces, NUL (GNU). A GNU header must have only zeros in bytes 345 to 499, where ustar keeps its name prefix and GNU keeps times, sparse maps, and volume offsets.
 - The checksum field (bytes 148 to 155) is the sum of all 512 bytes, as unsigned numbers, counting the checksum field itself as spaces. A sum over signed bytes, which some old tars wrote and GNU tar and `tarfile` accept, is not read.
@@ -17,7 +17,7 @@ An archive is a sequence of 512-byte header blocks and ends at a block of zeros.
 - The name field (bytes 0 to 99) and the prefix field (bytes 345 to 499), each up to its first NUL, are valid UTF-8. The entry's name is the name field, or the prefix, `/`, and the name field when the prefix is not empty.
 - A regular typeflag (NUL, `0`, `7`) with a name ending in `/`, which older archives use for a directory, has size zero: readers disagree on whether data follows such an entry.
 
-An archive fails to parse when a header is not read, when an entry's data runs past the end of the input, or when the input ends before a block of zeros. Then the tool prints nothing on standard output and exits with code 1, as it does when the file cannot be read.
+An archive fails to parse when a header is not read, when an entry's data runs past the end of the input, when the length is not a multiple of 512, or when the input does not end in two zero blocks with only zero bytes after the first of them. Then the tool prints nothing on standard output and exits with code 1, as it does when the file cannot be read.
 
 ## The path gate
 

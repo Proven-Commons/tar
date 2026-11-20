@@ -25,16 +25,24 @@ structure RawEntry where
 /-- Blocks of the archive, read from offset `off`. `fuel` counts down
     the blocks that can remain, which keeps the function total on
     hostile input: a size field that points past the end, or a block
-    count that never reaches a full zero block, gives `none`. An
-    archive that ends without its zero blocks is truncated, and a
-    truncated archive is rejected whole, not read as a clean prefix. -/
+    count that never reaches two zero blocks, gives `none`. The
+    archive must end with two zero blocks, and every byte after the
+    first of them must be zero. One zero block, nonzero padding, or
+    another archive concatenated after the end is rejected whole, not
+    read as a clean prefix. -/
 def parseBlocks (data : ByteArray) (off : Nat) : Nat → Option (List RawEntry)
   | 0 => none
   | fuel + 1 =>
     if off + 512 > data.size then none
     else
       let block := data.extract off (off + 512)
-      if block.toList.all (· = 0) then some []
+      if block.toList.all (· = 0) then
+        -- Two end blocks, then only zero padding. A reader that
+        -- stopped at the first zero block would miss an entry hidden
+        -- after it, or one in a second archive concatenated on the end.
+        if off + 1024 > data.size then none
+        else if (data.extract off data.size).toList.all (· = 0) then some []
+        else none
       else match parseBlock block with
         | none => none
         | some h =>
@@ -47,9 +55,12 @@ def parseBlocks (data : ByteArray) (off : Nat) : Nat → Option (List RawEntry)
               some ({ name := h.name, typeflag := h.typeflag,
                       data := data.extract dataOff (dataOff + h.size) } :: rest)
 
-/-- Parse a whole archive. -/
+/-- Parse a whole archive. A length that is not a multiple of 512 is
+    rejected, as is an archive that does not end in two zero blocks
+    with only zero bytes after the first of them. -/
 def parseArchive (data : ByteArray) : Option (List RawEntry) :=
-  parseBlocks data 0 (data.size / 512 + 1)
+  if data.size % 512 != 0 then none
+  else parseBlocks data 0 (data.size / 512 + 1)
 
 /-- Regular files only: typeflag `0`, NUL, or `7` (a contiguous file,
     which POSIX lets a reader treat as regular, as Python's `tarfile`

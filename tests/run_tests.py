@@ -14,9 +14,11 @@ It has two parts:
   written with tarfile, under eight destinations, and six destinations
   the tool must refuse; archives written by the tool and read back by
   tarfile; broken archives; the formats the pilot does not read (the
-  probes of the 2026-10-24 bar audit, and more of the same kinds); and
-  archives in formats it reads, GNU tar's own output among them, each
-  compared with tarfile under `list` and `manifest`.
+  probes of the 2026-10-24 bar audit, and more of the same kinds);
+  archives that break the end rule (one zero block, nonzero padding, a
+  length that is not a multiple of 512, and concatenated archives);
+  and archives in formats it reads, GNU tar's own output among them,
+  each compared with tarfile under `list` and `manifest`.
 - Random cases, from a recorded seed: archives written by tarfile in
   ustar, GNU and pax formats, with hostile names, every POSIX entry
   type, and random data, and the same kind of archives mutated (bytes
@@ -265,9 +267,58 @@ def unsupported_archives(work):
         yield "system tar, sparse file (typeflag S, map in bytes 386 to 494)", out.read_bytes()
 
 
+def first_zero_block(raw):
+    """Offset of the first all-zero 512-byte block, or None."""
+    for off in range(0, len(raw) - len(raw) % 512, 512):
+        if raw[off:off + 512] == bytes(512):
+            return off
+    return None
+
+
+def end_rule_archives():
+    """Archives that break the end rule. Each must fail to parse, with
+    nothing on standard output. The rule is two zero blocks, only zero
+    bytes after the first of them, and a length that is a multiple of
+    512. A reader that stopped at the first zero block would list only
+    the prefix, including when a second archive is concatenated on."""
+    a = one_file(tarfile.USTAR_FORMAT, "a.txt", data=b"a")
+    b = one_file(tarfile.USTAR_FORMAT, "b.txt", data=b"b")
+    end_a, end_b = first_zero_block(a), first_zero_block(b)
+    two_a = a[:end_a + 1024]
+    two_b = b[:end_b + 1024]
+    yield "one zero end block", a[:end_a + 512]
+    yield "no zero end blocks", a[:end_a]
+    yield "only a single zero block", bytes(512)
+    yield "length not a multiple of 512", two_a[:-1]
+    yield "one extra byte after two zero blocks", two_a + b"\x00"
+    bad = bytearray(two_a)
+    bad[-1] = 1
+    yield "second end block is not all zeros", bytes(bad)
+    yield "nonzero padding after two zero blocks", two_a + bytes(511) + b"\x01"
+    yield "concatenated archives", a + b
+    yield "concatenated archives with exactly two end blocks", two_a + two_b
+    yield "entry hidden after one zero block", a[:end_a + 512] + two_b
+
+
+# Readable archives whose end is the rule itself: exactly two zero
+# blocks, extra zero padding, and an empty archive of two zero blocks.
+# The model must agree with the tool on these, not only tarfile.
+END_RULE_READABLE = {
+    "exactly two zero blocks",
+    "two zero blocks plus extra zero padding",
+    "empty archive of two zero blocks",
+}
+
+
 def readable_archives(work):
     """Archives in formats the pilot reads. Each must read as Python's
     tarfile reads it."""
+    # Two zero blocks are enough. Further zero blocks are padding.
+    ended = one_file(tarfile.USTAR_FORMAT, "ended.txt", data=b"end")
+    end = first_zero_block(ended)
+    yield "exactly two zero blocks", ended[:end + 1024]
+    yield "two zero blocks plus extra zero padding", ended[:end + 1024] + bytes(1024)
+    yield "empty archive of two zero blocks", bytes(1024)
     yield "contiguous file (typeflag 7)", one_file(
         tarfile.USTAR_FORMAT, "contig.bin", data=b"contiguous", typ=tarfile.CONTTYPE)
     buf = io.BytesIO()
@@ -563,13 +614,19 @@ def model_header(block):
 
 def model_parse(data):
     """The entries (name, data, typeflag) of an archive, or None when the
-    whole archive must fail to parse."""
+    whole archive must fail to parse. The end rule, from SPEC.md: the
+    length is a multiple of 512, there are two zero blocks, and every
+    byte after the first of them is zero."""
+    if len(data) % 512 != 0:
+        return None
     off, entries = 0, []
     while True:
         if off + 512 > len(data):
             return None
         block = data[off:off + 512]
         if block == bytes(512):
+            if off + 1024 > len(data) or data[off:] != bytes(len(data) - off):
+                return None
             return entries
         header = model_header(block)
         if header is None:
@@ -955,7 +1012,24 @@ def main():
                       r.returncode == 1 and r.stdout == "",
                       f"rc={r.returncode} out={r.stdout[:200]!r}")
 
-        # 7. Formats the pilot reads give what tarfile reads.
+        # 7. The end rule: two zero blocks, only zero bytes after the
+        # first of them, and a length that is a multiple of 512. Each
+        # failure prints nothing, under both commands. Concatenated
+        # archives are in this set.
+        end_rule = 0
+        for i, (label, raw) in enumerate(end_rule_archives()):
+            end_rule += 1
+            path = td / f"end{i}.tar"
+            path.write_bytes(raw)
+            check(f"end-rule-model: {label}", model_parse(raw) is None,
+                  "the model read an archive that breaks the end rule")
+            for cmd in (["list", str(path)], ["manifest", str(path), "out"]):
+                r = run_lean(*cmd)
+                check(f"end-rule-fails: {label} ({cmd[0]})",
+                      r.returncode == 1 and r.stdout == "",
+                      f"rc={r.returncode} out={r.stdout[:200]!r}")
+
+        # 8. Formats the pilot reads give what tarfile reads.
         readable = 0
         for i, (label, raw) in enumerate(readable_archives(td)):
             readable += 1
@@ -970,15 +1044,25 @@ def main():
             want = norm([(escape_name(n), len(d), t) for (n, d, t) in ref])
             check(f"readable-list: {label}", r.returncode == 0 and got == want,
                   f"rc={r.returncode} lean={got} expected={want}")
+            if label in END_RULE_READABLE:
+                want_rc, want_lines = model_output("list", raw)
+                check(f"readable-model-list: {label}",
+                      (r.returncode, output_lines(r.stdout)) == (want_rc, want_lines),
+                      f"rc={r.returncode} got={output_lines(r.stdout)} want={want_lines}")
             r = run_lean("manifest", str(path), "out")
             got = norm_skip([skip_as_tarfile_reads(l) for l in output_lines(r.stdout)])
             want = norm_skip(expected_manifest(ref))
             check(f"readable-manifest: {label}", r.returncode == 0 and got == want,
                   f"rc={r.returncode} lean={got} expected={want}")
+            if label in END_RULE_READABLE:
+                want_rc, want_lines = model_output("manifest", raw, "out")
+                check(f"readable-model-manifest: {label}",
+                      (r.returncode, output_lines(r.stdout)) == (want_rc, want_lines),
+                      f"rc={r.returncode} got={output_lines(r.stdout)} want={want_lines}")
 
-        # Archive A, the tool's own archive, three broken ones, and the
-        # format probes.
-        fixed_archives = 1 + 1 + 3 + unsupported + readable
+        # Archive A, the tool's own archive, three broken ones, the
+        # format probes, and the end-rule archives.
+        fixed_archives = 1 + 1 + 3 + unsupported + end_rule + readable
 
         # 8. Random archives from the seed.
         stats = random_cases(args.seed, args.count, td)
@@ -1017,6 +1101,10 @@ def main():
         "random garbage, corrupted checksum",
         f"- Archives in formats the pilot does not read, which must fail with exit code 1 "
         f"under `list` and `manifest`: {unsupported}",
+        f"- Archives that break the end rule (two zero blocks, only zero bytes after "
+        f"the first, length a multiple of 512), including concatenated archives, which "
+        f"must fail with exit code 1 and empty standard output under `list` and "
+        f"`manifest`: {end_rule}",
         f"- Archives in other formats it reads, compared with tarfile under `list` and "
         f"`manifest`: {readable}",
         f"- Failures: {len(failures)}",
